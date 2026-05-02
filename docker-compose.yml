@@ -1,0 +1,56 @@
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: supertech123
+      MYSQL_DATABASE: supertech_pm
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    command: >
+      --innodb-buffer-pool-size=256M
+      --max-connections=50
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: supertech123
+      DB_NAME: supertech_pm
+      JWT_SECRET_KEY: change-this-to-a-secure-random-string
+      DEFAULT_STORAGE_PROVIDER: aliyun
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./server/app:/app/app
+      - upload_temp:/tmp/uploads
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+volumes:
+  mysql_data:
+  upload_temp:
