@@ -5,6 +5,8 @@ export interface Activity {
   name: string
   description: string | null
   event_date: string | null
+  start_time: string | null
+  end_time: string | null
   venue: string | null
   status: string
   wotu_album_id: string | null
@@ -15,6 +17,39 @@ export interface Activity {
   ready_program_count: number
   created_at: string
   updated_at: string
+}
+
+export interface PublicActivity {
+  id: number
+  name: string
+  description: string | null
+  event_date: string | null
+  start_time?: string | null
+  end_time?: string | null
+  venue: string | null
+  cover_image: string | null
+  program_count: number
+  photo_count: number
+  share_config?: Record<string, any>
+}
+
+export interface PublicProgramSearchItem {
+  id: number
+  name: string
+  sequence_number: number
+  access_token: string
+  photo_count: number
+  video_status: string
+}
+
+export interface WechatProfile {
+  openid: string
+  unionid?: string | null
+  nickname?: string | null
+  avatar_url?: string | null
+  province?: string | null
+  city?: string | null
+  country?: string | null
 }
 
 export interface Program {
@@ -58,6 +93,9 @@ export const adminApi = {
   login: (username: string, password: string) =>
     request.post('/admin/login', { username, password }),
 
+  changePassword: (oldPassword: string, newPassword: string) =>
+    request.put('/admin/password', { old_password: oldPassword, new_password: newPassword }),
+
   listActivities: () =>
     request.get<Activity[]>('/admin/activities'),
 
@@ -72,6 +110,14 @@ export const adminApi = {
 
   deleteActivity: (id: number) =>
     request.delete(`/admin/activities/${id}`),
+
+  uploadActivityCover: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request.post<{ url: string; filename: string }>('/admin/activities/cover/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
 
   listPrograms: (activityId: number) =>
     request.get<Program[]>(`/admin/activities/${activityId}/programs`),
@@ -98,6 +144,40 @@ export const publicApi = {
     request.get<PhotoItem[]>(`/public/programs/${token}/photos`, {
       params: { page, page_size: pageSize },
     }),
+
+  printPhoto: (token: string, photoId: number, copies = 1, profile?: WechatProfile | null) =>
+    request.post(`/public/programs/${token}/photos/${photoId}/print`, {
+      copies,
+      user_identifier: profile?.openid,
+      user_name: profile?.nickname,
+    }),
+
+  listActivities: () =>
+    request.get<PublicActivity[]>('/public/activities'),
+
+  getActivity: (activityId: number) =>
+    request.get<PublicActivity>(`/public/activities/${activityId}`),
+
+  searchPrograms: (activityId: number, keyword: string) =>
+    request.get<PublicProgramSearchItem[]>(`/public/activities/${activityId}/programs/search`, {
+      params: { q: keyword },
+    }),
+
+  getWechatConfig: () =>
+    request.get<{ enabled: boolean; appid: string; scope: string }>('/public/wechat/config'),
+
+  getWechatOAuthUrl: (redirectUri: string) =>
+    request.get<{ url: string }>('/public/wechat/oauth-url', {
+      params: { redirect_uri: redirectUri },
+    }),
+
+  resolveWechatProfile: (code: string, activityId?: number) =>
+    request.get<WechatProfile>('/public/wechat/oauth-profile', {
+      params: { code, activity_id: activityId },
+    }),
+
+  trackWechatUser: (profile: WechatProfile & { activity_id: number }) =>
+    request.post('/public/wechat/track', profile),
 }
 
 // Upload API
@@ -233,4 +313,86 @@ export const photoApi = {
     request.get<PhotoListResponse>(`/admin/photos/activity/${activityId}`, {
       params: { page, page_size: pageSize },
     }),
+}
+
+export interface PrintRecordItem {
+  id: number
+  activity_id: number
+  program_id: number | null
+  program_name: string | null
+  program_sequence_number: number | null
+  photo_id: number | null
+  photo_url: string | null
+  photo_filename: string | null
+  user_identifier: string | null
+  user_name: string | null
+  template_name: string | null
+  paper_size: string | null
+  copies: number
+  status: string
+  task_id: string | null
+  error_msg: string | null
+  printed_at: string | null
+  created_at: string | null
+}
+
+export interface PrintRecordResponse {
+  items: PrintRecordItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface AudienceItem {
+  id: number
+  activity_id: number
+  openid: string
+  unionid: string | null
+  nickname: string | null
+  avatar_url: string | null
+  phone: string | null
+  province: string | null
+  city: string | null
+  country: string | null
+  first_ip: string | null
+  last_ip: string | null
+  first_client: string | null
+  last_client: string | null
+  is_online: boolean
+  is_blacklisted: boolean
+  first_seen_at: string | null
+  last_seen_at: string | null
+}
+
+export interface AudienceResponse {
+  items: AudienceItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export const printApi = {
+  getActivityPrintRecords: (activityId: number, page = 1, pageSize = 20) =>
+    request.get<PrintRecordResponse>(`/admin/activities/${activityId}/print-records`, {
+      params: { page, page_size: pageSize },
+    }),
+
+  createActivityPrintRecord: (activityId: number, photoId: number, copies = 1) =>
+    request.post(`/admin/activities/${activityId}/print-records`, {
+      photo_id: photoId,
+      copies,
+    }),
+
+  reprintRecord: (recordId: number) =>
+    request.post(`/admin/print-records/${recordId}/reprint`),
+}
+
+export const audienceApi = {
+  getActivityAudiences: (activityId: number, page = 1, pageSize = 20) =>
+    request.get<AudienceResponse>(`/admin/activities/${activityId}/audiences`, {
+      params: { page, page_size: pageSize },
+    }),
+
+  updateBlacklist: (audienceId: number, blacklisted: boolean) =>
+    request.post(`/admin/audiences/${audienceId}/blacklist`, { blacklisted }),
 }

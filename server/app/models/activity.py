@@ -59,6 +59,8 @@ class Activity(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     event_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    start_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     venue: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     status: Mapped[ActivityStatus] = mapped_column(
         SAEnum(ActivityStatus), default=ActivityStatus.ACTIVE

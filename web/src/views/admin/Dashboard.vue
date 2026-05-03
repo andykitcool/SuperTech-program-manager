@@ -1,29 +1,54 @@
 <template>
   <a-layout class="admin-layout">
-    <a-layout-sider v-model:collapsed="collapsed" collapsible theme="dark" :width="220">
+    <a-layout-sider
+      v-model:collapsed="collapsed"
+      collapsible
+      theme="dark"
+      :width="220"
+      class="admin-sider"
+    >
       <div class="admin-sider-logo">
         <h2 v-if="!collapsed">SuperTech PM</h2>
         <h2 v-else>ST</h2>
       </div>
-      <a-menu theme="dark" mode="inline" :selected-keys="selectedKeys" @click="handleMenuClick">
-        <a-menu-item key="/admin">
-          <template #icon><AppstoreOutlined /></template>
-          <span>活动管理</span>
-        </a-menu-item>
-        <a-menu-item key="/admin/wotu-sync">
-          <template #icon><CloudSyncOutlined /></template>
-          <span>照片同步</span>
-        </a-menu-item>
-        <a-menu-item key="/admin/photo-manager">
-          <template #icon><PictureOutlined /></template>
-          <span>照片管理</span>
-        </a-menu-item>
-        <a-menu-item key="/admin/settings">
-          <template #icon><SettingOutlined /></template>
-          <span>系统设置</span>
-        </a-menu-item>
-      </a-menu>
+
+      <div class="sider-menu-shell">
+        <a-menu
+          class="sider-menu-main"
+          theme="dark"
+          mode="inline"
+          :selected-keys="selectedKeys"
+          @click="handleMenuClick"
+        >
+          <a-menu-item key="/admin">
+            <template #icon><AppstoreOutlined /></template>
+            <span>活动管理</span>
+          </a-menu-item>
+          <a-menu-item key="/admin/wotu-sync">
+            <template #icon><CloudSyncOutlined /></template>
+            <span>同步记录</span>
+          </a-menu-item>
+          <a-menu-item key="/admin/photo-manager">
+            <template #icon><PictureOutlined /></template>
+            <span>照片管理</span>
+          </a-menu-item>
+        </a-menu>
+
+        <a-menu
+          class="sider-menu-bottom"
+          theme="dark"
+          mode="inline"
+          :selected-keys="selectedKeys"
+          @click="handleMenuClick"
+        >
+          <a-menu-item key="/admin/settings">
+            <template #icon><SettingOutlined /></template>
+            <span>系统设置</span>
+          </a-menu-item>
+        </a-menu>
+      </div>
     </a-layout-sider>
+
     <a-layout>
       <a-layout-header class="admin-header">
         <div class="header-left">
@@ -31,23 +56,29 @@
           <MenuUnfoldOutlined v-else class="trigger" @click="collapsed = false" />
           <span class="page-title">素材管理系统</span>
         </div>
+
         <div class="header-right">
-          <a-dropdown>
+          <a-dropdown placement="bottomRight">
             <a class="user-info" @click.prevent>
               <UserOutlined />
-              <span style="margin-left: 8px">{{ auth.username || '管理员' }}</span>
+              <span>{{ auth.username || 'admin' }}</span>
             </a>
             <template #overlay>
               <a-menu>
+                <a-menu-item @click="router.push('/admin/change-password')">
+                  <LockOutlined />
+                  <span>修改密码</span>
+                </a-menu-item>
                 <a-menu-item @click="handleLogout">
                   <LogoutOutlined />
-                  <span style="margin-left: 8px">退出登录</span>
+                  <span>退出登录</span>
                 </a-menu-item>
               </a-menu>
             </template>
           </a-dropdown>
         </div>
       </a-layout-header>
+
       <a-layout-content class="admin-content">
         <router-view />
       </a-layout-content>
@@ -56,17 +87,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   AppstoreOutlined,
   CloudSyncOutlined,
-  PictureOutlined,
-  SettingOutlined,
-  UserOutlined,
+  LockOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PictureOutlined,
+  SettingOutlined,
+  UserOutlined,
 } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -75,7 +107,10 @@ const route = useRoute()
 const auth = useAuthStore()
 const collapsed = ref(false)
 
-const selectedKeys = computed(() => [route.path])
+const selectedKeys = computed(() => {
+  if (route.path === '/admin/change-password') return []
+  return [route.path]
+})
 
 const handleMenuClick = ({ key }: { key: string }) => {
   router.push(key)
@@ -96,6 +131,41 @@ watch(() => route.path, (path) => {
 <style scoped>
 .admin-layout {
   min-height: 100vh;
+}
+
+.admin-sider :deep(.ant-layout-sider-children) {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-sider-logo {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.admin-sider-logo h2 {
+  margin: 0;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.sider-menu-shell {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.sider-menu-main {
+  flex: 1;
+}
+
+.sider-menu-bottom {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .admin-header {
@@ -137,8 +207,9 @@ watch(() => route.path, (path) => {
 }
 
 .user-info {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  gap: 8px;
   color: rgba(0, 0, 0, 0.65);
   cursor: pointer;
   transition: color 0.3s;

@@ -34,6 +34,21 @@ def _backfill_access_tokens():
         db.close()
 
 
+def _ensure_activity_time_columns():
+    """Add activity start/end datetime columns for existing MySQL databases."""
+    from sqlalchemy import text
+
+    db = SessionLocal()
+    try:
+        for column in ("start_time", "end_time"):
+            result = db.execute(text(f"SHOW COLUMNS FROM activities LIKE '{column}'"))
+            if not result.fetchone():
+                db.execute(text(f"ALTER TABLE activities ADD COLUMN {column} DATETIME NULL"))
+                db.commit()
+    finally:
+        db.close()
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="SuperTech Program Manager",
@@ -46,6 +61,11 @@ def create_app() -> FastAPI:
 
     # Backfill access_token for existing programs
     _backfill_access_tokens()
+    _ensure_activity_time_columns()
+
+    import os
+    os.makedirs("uploads", exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
     # CORS
     app.add_middleware(

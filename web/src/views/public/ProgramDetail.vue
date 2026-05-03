@@ -6,7 +6,6 @@
 
     <a-spin :spinning="loading">
       <template v-if="program">
-        <!-- Video Section -->
         <div class="video-section" v-if="program.video_url">
           <video
             :src="program.video_url"
@@ -17,7 +16,6 @@
           ></video>
         </div>
 
-        <!-- Photo Section -->
         <div class="photo-section">
           <div class="section-header">
             <h3>
@@ -29,14 +27,15 @@
 
           <a-skeleton :loading="photosLoading" active :paragraph="{ rows: 6 }">
             <div v-if="photos.length > 0" class="photo-grid">
-              <div
-                v-for="photo in photos"
+              <button
+                v-for="(photo, index) in photos"
                 :key="photo.id"
+                type="button"
                 class="photo-item"
-                @click="previewIndex = photos.indexOf(photo)"
+                @click="openPreview(index)"
               >
-                <img :src="getThumbUrl(photo.storage_url)" :alt="`照片 ${photo.id}`" loading="lazy" />
-              </div>
+                <img :src="getThumbUrl(getPhotoSource(photo))" :alt="`照片 ${index + 1}`" loading="lazy" />
+              </button>
             </div>
             <a-empty v-else description="暂无照片" style="padding: 40px 0" />
           </a-skeleton>
@@ -57,54 +56,119 @@
       />
     </a-spin>
 
-    <!-- Photo Preview Modal -->
-    <a-modal
-      :open="previewIndex >= 0"
-      :footer="null"
-      :width="'100%'"
-      :wrap-class-name="'photo-preview-modal'"
-      @cancel="previewIndex = -1"
-    >
-      <div class="preview-container">
-        <img
-          v-if="previewIndex >= 0 && photos[previewIndex]"
-          :src="getPreviewUrl(photos[previewIndex].storage_url)"
-          class="preview-image"
-        />
-      </div>
-      <div class="preview-nav">
-        <a-button
-          type="text"
-          :disabled="previewIndex <= 0"
-          @click="previewIndex--"
+    <Teleport to="body">
+      <Transition name="viewer-fade">
+        <div
+          v-if="previewIndex >= 0 && currentPhoto"
+          class="photo-viewer"
+          @click.self="closePreview"
+          @touchstart.passive="handleTouchStart"
+          @touchend.passive="handleTouchEnd"
         >
-          <LeftOutlined />
-        </a-button>
-        <span class="preview-counter">{{ previewIndex + 1 }} / {{ photos.length }}</span>
-        <a-button
-          type="text"
-          :disabled="previewIndex >= photos.length - 1"
-          @click="previewIndex++"
-        >
-          <RightOutlined />
-        </a-button>
-      </div>
-    </a-modal>
+          <div class="viewer-topbar">
+            <button class="viewer-icon-button" type="button" aria-label="关闭" @click="closePreview">
+              <CloseOutlined />
+            </button>
+            <div class="viewer-counter">{{ previewIndex + 1 }} / {{ photos.length }}</div>
+            <div class="viewer-actions">
+              <button
+                class="viewer-icon-button"
+                type="button"
+                aria-label="打印"
+                :disabled="!currentPhoto || printingPhoto"
+                @click="printCurrentPhoto"
+              >
+                <PrinterOutlined />
+              </button>
+              <button
+                class="viewer-icon-button"
+                type="button"
+                aria-label="下载"
+                :disabled="!currentOriginalUrl"
+                @click="downloadPhoto"
+              >
+                <DownloadOutlined />
+              </button>
+            </div>
+          </div>
+
+          <button
+            class="viewer-nav-button viewer-nav-prev"
+            type="button"
+            aria-label="上一张"
+            :disabled="previewIndex <= 0"
+            @click.stop="showPrevPhoto"
+          >
+            <LeftOutlined />
+          </button>
+          <button
+            class="viewer-nav-button viewer-nav-next"
+            type="button"
+            aria-label="下一张"
+            :disabled="previewIndex >= photos.length - 1"
+            @click.stop="showNextPhoto"
+          >
+            <RightOutlined />
+          </button>
+
+          <div class="viewer-stage">
+            <img
+              :key="currentPhoto.id"
+              :src="currentPreviewUrl"
+              class="viewer-image"
+              :alt="`照片 ${previewIndex + 1}`"
+              draggable="false"
+            />
+          </div>
+
+          <div class="viewer-footer">
+            <div class="viewer-meta">
+              <strong>{{ program?.name }}</strong>
+              <span v-if="currentPhoto.shoot_time">{{ formatShootTime(currentPhoto.shoot_time) }}</span>
+            </div>
+            <div class="viewer-thumb-strip">
+              <button
+                v-for="(photo, index) in photos"
+                :key="photo.id"
+                type="button"
+                class="viewer-thumb"
+                :class="{ active: index === previewIndex }"
+                @click="previewIndex = index"
+              >
+                <img :src="getThumbUrl(getPhotoSource(photo))" :alt="`缩略图 ${index + 1}`" loading="lazy" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { CameraOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons-vue'
+import {
+  CameraOutlined,
+  CloseOutlined,
+  DownloadOutlined,
+  LeftOutlined,
+  PrinterOutlined,
+  RightOutlined,
+} from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
-import { publicApi, type Program, type PhotoItem } from '@/api/admin'
-import { getThumbUrl, getPreviewUrl } from '@/utils/image'
+import { publicApi, type Program, type PhotoItem, type WechatProfile } from '@/api/admin'
+import { getPhotoUrl, getPreviewUrl, getThumbUrl } from '@/utils/image'
+import { ensureWechatProfile } from '@/utils/wechat'
+
+type PublicPhotoItem = PhotoItem & {
+  wotu_url?: string | null
+}
 
 const route = useRoute()
 const token = computed(() => String(route.params.token))
 const program = ref<Program | null>(null)
-const photos = ref<PhotoItem[]>([])
+const photos = ref<PublicPhotoItem[]>([])
 const loading = ref(false)
 const photosLoading = ref(false)
 const loadingMore = ref(false)
@@ -113,8 +177,97 @@ const currentPage = ref(1)
 const pageSize = 30
 const totalPhotos = ref(0)
 const previewIndex = ref(-1)
+const touchStartX = ref(0)
+const printingPhoto = ref(false)
+const wechatProfile = ref<WechatProfile | null>(null)
 
 const hasMorePhotos = computed(() => photos.value.length < totalPhotos.value)
+const currentPhoto = computed(() => photos.value[previewIndex.value] || null)
+const currentOriginalUrl = computed(() => getPhotoSource(currentPhoto.value))
+const currentPreviewUrl = computed(() => getPreviewUrl(currentOriginalUrl.value))
+
+function getPhotoSource(photo: PublicPhotoItem | null): string {
+  if (!photo) return ''
+  return getPhotoUrl(photo.storage_url, photo.wotu_url)
+}
+
+function openPreview(index: number) {
+  previewIndex.value = index
+}
+
+function closePreview() {
+  previewIndex.value = -1
+}
+
+function showPrevPhoto() {
+  if (previewIndex.value > 0) {
+    previewIndex.value--
+  }
+}
+
+function showNextPhoto() {
+  if (previewIndex.value < photos.value.length - 1) {
+    previewIndex.value++
+  }
+}
+
+function downloadPhoto() {
+  if (!currentOriginalUrl.value) return
+  const link = document.createElement('a')
+  link.href = currentOriginalUrl.value
+  link.download = `${program.value?.name || 'photo'}-${previewIndex.value + 1}.jpg`
+  link.target = '_blank'
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
+async function printCurrentPhoto() {
+  if (!currentPhoto.value || printingPhoto.value) return
+  printingPhoto.value = true
+  try {
+    await publicApi.printPhoto(token.value, currentPhoto.value.id, 1, wechatProfile.value)
+    message.success('已提交打印任务')
+  } catch {
+    message.error('提交打印失败')
+  } finally {
+    printingPhoto.value = false
+  }
+}
+
+function handleTouchStart(event: TouchEvent) {
+  touchStartX.value = event.changedTouches[0]?.clientX || 0
+}
+
+function handleTouchEnd(event: TouchEvent) {
+  const endX = event.changedTouches[0]?.clientX || 0
+  const distance = endX - touchStartX.value
+  if (Math.abs(distance) < 48) return
+  if (distance > 0) {
+    showPrevPhoto()
+  } else {
+    showNextPhoto()
+  }
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (previewIndex.value < 0) return
+  if (event.key === 'Escape') closePreview()
+  if (event.key === 'ArrowLeft') showPrevPhoto()
+  if (event.key === 'ArrowRight') showNextPhoto()
+}
+
+function formatShootTime(value: string): string {
+  const date = new Date(value.replace(' ', 'T'))
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
 
 const fetchProgram = async () => {
   loading.value = true
@@ -138,7 +291,7 @@ const fetchPhotos = async (page: number, append = false) => {
   loadingMore.value = append
   try {
     const res = await publicApi.listPhotos(token.value, page, pageSize)
-    const data = res.data
+    const data = res.data as PublicPhotoItem[]
     if (append) {
       photos.value = [...photos.value, ...data]
     } else {
@@ -162,11 +315,22 @@ const loadMorePhotos = () => {
   fetchPhotos(currentPage.value, true)
 }
 
+watch(previewIndex, index => {
+  document.body.style.overflow = index >= 0 ? 'hidden' : ''
+})
+
 onMounted(async () => {
+  window.addEventListener('keydown', handleKeydown)
   await fetchProgram()
   if (program.value) {
+    wechatProfile.value = await ensureWechatProfile(program.value.activity_id)
     fetchPhotos(1)
   }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+  document.body.style.overflow = ''
 })
 </script>
 
@@ -233,16 +397,28 @@ onMounted(async () => {
   gap: 4px;
 }
 
-.photo-item img {
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
+.photo-item {
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  background: #f3f3f3;
+  padding: 0;
+  overflow: hidden;
   cursor: pointer;
-  transition: opacity 0.2s;
+  aspect-ratio: 1;
 }
 
-.photo-item img:hover {
-  opacity: 0.85;
+.photo-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.24s ease, opacity 0.2s ease;
+}
+
+.photo-item:hover img {
+  opacity: 0.9;
+  transform: scale(1.025);
 }
 
 .load-more {
@@ -252,57 +428,218 @@ onMounted(async () => {
 </style>
 
 <style>
-.photo-preview-modal .ant-modal-content {
-  background: rgba(0, 0, 0, 0.95);
-  max-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.photo-preview-modal .ant-modal-body {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  overflow: hidden;
-}
-
-.photo-preview-modal .ant-modal-close {
+.photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background:
+    radial-gradient(circle at 50% 24%, rgba(80, 88, 105, 0.24), transparent 34%),
+    #050505;
   color: #fff;
-  font-size: 24px;
+  overflow: hidden;
+  touch-action: pan-y;
 }
 
-.preview-container {
+.viewer-topbar,
+.viewer-footer {
+  position: relative;
+  z-index: 3;
+}
+
+.viewer-topbar {
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  align-items: center;
+  padding: max(12px, env(safe-area-inset-top)) 12px 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
+}
+
+.viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.viewer-counter {
+  justify-self: center;
+  min-width: 70px;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+  backdrop-filter: blur(14px);
+}
+
+.viewer-icon-button,
+.viewer-nav-button {
+  appearance: none;
+  border: 0;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.viewer-icon-button {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 19px;
+  backdrop-filter: blur(14px);
+}
+
+.viewer-icon-button:disabled,
+.viewer-nav-button:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.viewer-stage {
+  position: relative;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  height: 100%;
-  padding: 20px;
+  padding: 8px 18px;
 }
 
-.preview-image {
+.viewer-image {
   max-width: 100%;
-  max-height: 70vh;
+  max-height: 100%;
   object-fit: contain;
-  border-radius: 4px;
+  border-radius: 2px;
+  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.55);
+  user-select: none;
 }
 
-.preview-nav {
+.viewer-nav-button {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  width: 48px;
+  height: 74px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.11);
+  font-size: 24px;
+  transform: translateY(-50%);
+  backdrop-filter: blur(14px);
+}
+
+.viewer-nav-prev {
+  left: 14px;
+}
+
+.viewer-nav-next {
+  right: 14px;
+}
+
+.viewer-footer {
+  padding: 8px 14px max(14px, env(safe-area-inset-bottom));
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.86), rgba(0, 0, 0, 0));
+}
+
+.viewer-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 20px;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 13px;
 }
 
-.preview-nav .ant-btn {
-  color: #fff !important;
-  font-size: 20px;
+.viewer-meta strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
 }
 
-.preview-counter {
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 14px;
+.viewer-meta span {
+  flex: none;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.viewer-thumb-strip {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 2px 0;
+  scrollbar-width: none;
+}
+
+.viewer-thumb-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.viewer-thumb {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  opacity: 0.58;
+  cursor: pointer;
+}
+
+.viewer-thumb.active {
+  border-color: #fff;
+  opacity: 1;
+}
+
+.viewer-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.viewer-fade-enter-active,
+.viewer-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.viewer-fade-enter-from,
+.viewer-fade-leave-to {
+  opacity: 0;
+}
+
+@media (max-width: 640px) {
+  .viewer-stage {
+    padding: 0;
+  }
+
+  .viewer-image {
+    width: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .viewer-nav-button {
+    display: none;
+  }
+
+  .viewer-footer {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .viewer-thumb {
+    flex-basis: 42px;
+    width: 42px;
+    height: 42px;
+  }
 }
 </style>

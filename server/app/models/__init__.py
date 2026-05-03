@@ -5,6 +5,8 @@ from app.models.video import Video, UploadType, UploadStatus, StorageProvider
 from app.models.photo import Photo, SyncStatus
 from app.models.settings import SystemSettings
 from app.models.sync_task import SyncTask, SyncTaskStatus
+from app.models.print_record import PrintRecord
+from app.models.audience import Audience
 
 __all__ = [
     "Base",
@@ -14,4 +16,6 @@ __all__ = [
     "Photo", "SyncStatus",
     "SystemSettings",
     "SyncTask", "SyncTaskStatus",
+    "PrintRecord",
+    "Audience",
 ]

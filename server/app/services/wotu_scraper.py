@@ -12,7 +12,7 @@ from app.services.wotu_utils import extract_ext_from_url, sanitize_filename
 
 logger = logging.getLogger(__name__)
 
-ALLTUU_API_RE = re.compile(r'v4c\.alltuu\.com.*?/rest/v4c/fpl/', re.IGNORECASE)
+ALLTUU_API_RE = re.compile(r'v4c\.alltuu\.com.*?/rest/v4c/fpl[^/]*/', re.IGNORECASE)
 
 
 class WotuScraper:

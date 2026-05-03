@@ -40,6 +40,7 @@ services:
         condition: service_healthy
     volumes:
       - ./server/app:/app/app
+      - ./server/uploads:/app/uploads
       - upload_temp:/tmp/uploads
 
   web:

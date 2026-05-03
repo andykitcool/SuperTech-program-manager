@@ -41,6 +41,11 @@ const router = createRouter({
           component: () => import('@/views/admin/Settings.vue'),
         },
         {
+          path: 'change-password',
+          name: 'ChangePassword',
+          component: () => import('@/views/admin/ChangePassword.vue'),
+        },
+        {
           path: 'wotu-sync',
           name: 'WotuSync',
           component: () => import('@/views/admin/WotuSync.vue'),
@@ -68,6 +73,16 @@ const router = createRouter({
       path: '/a/:pathMatch(.*)*',
       name: 'NotFoundActivity',
       component: () => import('@/views/public/NotFound.vue'),
+    },
+    {
+      path: '/p/index',
+      name: 'PublicActivityIndex',
+      component: () => import('@/views/public/ActivityIndex.vue'),
+    },
+    {
+      path: '/p/:activityId(\\d+)',
+      name: 'PublicActivityDetail',
+      component: () => import('@/views/public/ActivityDetail.vue'),
     },
     {
       path: '/p/:token',

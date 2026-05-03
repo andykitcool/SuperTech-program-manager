@@ -11,6 +11,8 @@ class ActivityCreate(BaseModel):
     name: str = Field(..., max_length=200)
     description: Optional[str] = None
     event_date: Optional[date] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
     venue: Optional[str] = None
     wotu_album_id: Optional[str] = None
     wotu_album_url: Optional[str] = None
@@ -22,6 +24,8 @@ class ActivityUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = None
     event_date: Optional[date] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
     venue: Optional[str] = None
     status: Optional[ActivityStatus] = None
     wotu_album_id: Optional[str] = None
@@ -35,6 +39,8 @@ class ActivityOut(BaseModel):
     name: str
     description: Optional[str]
     event_date: Optional[date]
+    start_time: Optional[datetime]
+    end_time: Optional[datetime]
     venue: Optional[str]
     status: ActivityStatus
     wotu_album_id: Optional[str]

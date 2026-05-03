@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from pydantic import BaseModel, Field
 
 from app.database import get_db
 from app.utils.auth import get_current_user
-from app.models import Activity, Program, ReadyMode, Video, Photo
+from app.models import Activity, Program, ReadyMode, Video, Photo, SystemSettings, PrintRecord, Audience
 from app.schemas.activity import ActivityCreate, ActivityUpdate, ActivityOut, ProgramCreate, ProgramUpdate, ProgramOut
 from app.schemas.program import ProgramBatchCreate
 
@@ -86,6 +87,36 @@ def list_activities(
         out.ready_program_count = sum(1 for p in a.programs if p.ready_status.value == "ready")
         result.append(out)
     return result
+
+
+@router.post("/activities/cover/upload")
+async def upload_activity_cover(
+    file: UploadFile = File(...),
+    _user: dict = Depends(get_current_user),
+):
+    import os
+    import shutil
+    import uuid
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        ext = ".jpg"
+
+    upload_dir = os.path.join("uploads", "activity-covers")
+    os.makedirs(upload_dir, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    path = os.path.join(upload_dir, filename)
+
+    with open(path, "wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    return {
+        "url": f"/uploads/activity-covers/{filename}",
+        "filename": filename,
+    }
 
 
 @router.get("/activities/{activity_id}", response_model=ActivityOut)
@@ -310,7 +341,7 @@ def import_programs_excel(
         for i, h in enumerate(header):
             if h in ('节目名称', '名称', 'name', '节目'):
                 col_map['name'] = i
-            elif h in ('序号', '编号', 'sequence', 'order'):
+            elif h in ('节目号', '序号', '编号', 'sequence', 'order'):
                 col_map['sequence_number'] = i
             elif h in ('开始时间', '录制开始', 'start_time', '开始'):
                 col_map['start_time'] = i
@@ -322,7 +353,7 @@ def import_programs_excel(
         if 'name' not in col_map:
             raise HTTPException(
                 status_code=400,
-                detail="未找到'节目名称'列，请确保表头包含：节目名称、序号、开始时间、结束时间",
+                detail="未找到'节目名称'列，请确保表头包含：节目名称、节目号、开始时间、结束时间",
             )
 
         from datetime import datetime as dt
@@ -395,14 +426,240 @@ def import_programs_excel(
         raise HTTPException(status_code=400, detail=f"Excel解析失败: {str(e)}")
 
 
-# ---- Auth ----
+# ---- Print Records ----
 
-from pydantic import BaseModel, Field
+@router.get("/activities/{activity_id}/print-records")
+def list_print_records(
+    activity_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    activity = db.query(Activity).filter(Activity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    query = db.query(PrintRecord).filter(PrintRecord.activity_id == activity_id)
+    total = query.count()
+    records = (
+        query.order_by(PrintRecord.created_at.desc(), PrintRecord.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    for record in records:
+        program = db.query(Program).filter(Program.id == record.program_id).first() if record.program_id else None
+        photo = db.query(Photo).filter(Photo.id == record.photo_id).first() if record.photo_id else None
+        items.append({
+            "id": record.id,
+            "activity_id": record.activity_id,
+            "program_id": record.program_id,
+            "program_name": program.name if program else None,
+            "program_sequence_number": program.sequence_number if program else None,
+            "photo_id": record.photo_id,
+            "photo_url": (photo.storage_url or photo.wotu_url) if photo else None,
+            "photo_filename": photo.filename if photo else None,
+            "user_identifier": record.user_identifier,
+            "user_name": record.user_name,
+            "template_name": record.template_name,
+            "paper_size": record.paper_size,
+            "copies": record.copies,
+            "status": record.status,
+            "task_id": record.task_id,
+            "error_msg": record.error_msg,
+            "printed_at": str(record.printed_at) if record.printed_at else None,
+            "created_at": str(record.created_at) if record.created_at else None,
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+class CreatePrintRecordRequest(BaseModel):
+    photo_id: int
+    copies: int = Field(1, ge=1, le=99)
+    user_identifier: Optional[str] = None
+    user_name: Optional[str] = None
+
+
+def _load_activity_print_template(db: Session, activity_id: int) -> dict:
+    import json
+    setting = db.query(SystemSettings).filter(
+        SystemSettings.key == f"activity_{activity_id}_print_template"
+    ).first()
+    if not setting or not setting.value:
+        return {}
+    try:
+        return json.loads(setting.value)
+    except Exception:
+        return {}
+
+
+@router.post("/activities/{activity_id}/print-records")
+def create_print_record(
+    activity_id: int,
+    data: CreatePrintRecordRequest,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    activity = db.query(Activity).filter(Activity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    photo = db.query(Photo).filter(
+        Photo.id == data.photo_id,
+        Photo.activity_id == activity_id,
+    ).first()
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    template = _load_activity_print_template(db, activity_id)
+    record = PrintRecord(
+        activity_id=activity_id,
+        program_id=photo.program_id,
+        photo_id=photo.id,
+        user_identifier=data.user_identifier or "admin",
+        user_name=data.user_name or "管理员",
+        template_name=template.get("templateName") or "默认模版",
+        paper_size=template.get("dmPaperSize") or template.get("paperKey") or None,
+        copies=data.copies,
+        status="queued",
+        print_payload_json=template and __import__("json").dumps(template, ensure_ascii=False) or None,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"message": "print queued", "record_id": record.id}
+
+
+@router.post("/print-records/{record_id}/reprint")
+def reprint_record(
+    record_id: int,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    record = db.query(PrintRecord).filter(PrintRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Print record not found")
+
+    new_record = PrintRecord(
+        activity_id=record.activity_id,
+        program_id=record.program_id,
+        photo_id=record.photo_id,
+        source_record_id=record.id,
+        user_identifier=record.user_identifier,
+        user_name=record.user_name,
+        template_name=record.template_name,
+        paper_size=record.paper_size,
+        copies=record.copies,
+        status="queued",
+        print_payload_json=record.print_payload_json,
+    )
+    db.add(new_record)
+    db.commit()
+    db.refresh(new_record)
+
+    return {
+        "message": "reprint queued",
+        "record_id": new_record.id,
+        "source_record_id": record.id,
+    }
+
+
+# ---- Share Settings / Audience ----
+
+@router.get("/activities/{activity_id}/audiences")
+def list_activity_audiences(
+    activity_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    from datetime import datetime, timedelta
+
+    activity = db.query(Activity).filter(Activity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    online_after = datetime.now() - timedelta(minutes=5)
+    query = db.query(Audience).filter(Audience.activity_id == activity_id)
+    total = query.count()
+    audiences = (
+        query.order_by(Audience.last_seen_at.desc(), Audience.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return {
+        "items": [
+            {
+                "id": item.id,
+                "activity_id": item.activity_id,
+                "openid": item.openid,
+                "unionid": item.unionid,
+                "nickname": item.nickname,
+                "avatar_url": item.avatar_url,
+                "phone": item.phone,
+                "province": item.province,
+                "city": item.city,
+                "country": item.country,
+                "first_ip": item.first_ip,
+                "last_ip": item.last_ip,
+                "first_client": item.first_client,
+                "last_client": item.last_client,
+                "is_online": item.last_seen_at and item.last_seen_at >= online_after,
+                "is_blacklisted": item.is_blacklisted,
+                "first_seen_at": str(item.first_seen_at) if item.first_seen_at else None,
+                "last_seen_at": str(item.last_seen_at) if item.last_seen_at else None,
+            }
+            for item in audiences
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+class AudienceBlacklistRequest(BaseModel):
+    blacklisted: bool = True
+
+
+@router.post("/audiences/{audience_id}/blacklist")
+def update_audience_blacklist(
+    audience_id: int,
+    data: AudienceBlacklistRequest,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    audience = db.query(Audience).filter(Audience.id == audience_id).first()
+    if not audience:
+        raise HTTPException(status_code=404, detail="Audience not found")
+    audience.is_blacklisted = data.blacklisted
+    db.commit()
+    db.refresh(audience)
+    return {"message": "updated", "id": audience.id, "is_blacklisted": audience.is_blacklisted}
+
+
+# ---- Auth ----
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6, max_length=128)
 
 
 class LoginResponse(BaseModel):
@@ -411,16 +668,67 @@ class LoginResponse(BaseModel):
     username: str
 
 
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD_SETTING_KEY = "admin_password_hash"
+DEFAULT_ADMIN_PASSWORD = "admin123"
+
+
+def _get_admin_password_hash(db: Session) -> Optional[str]:
+    setting = db.query(SystemSettings).filter(SystemSettings.key == ADMIN_PASSWORD_SETTING_KEY).first()
+    return setting.value if setting and setting.value else None
+
+
+def _verify_admin_password(db: Session, password: str) -> bool:
+    from app.utils.auth import verify_password
+
+    password_hash = _get_admin_password_hash(db)
+    if password_hash:
+        return verify_password(password, password_hash)
+    return password == DEFAULT_ADMIN_PASSWORD
+
+
+def _save_admin_password(db: Session, password: str) -> None:
+    from app.utils.auth import get_password_hash
+
+    password_hash = get_password_hash(password)
+    setting = db.query(SystemSettings).filter(SystemSettings.key == ADMIN_PASSWORD_SETTING_KEY).first()
+    if not setting:
+        setting = SystemSettings(
+            key=ADMIN_PASSWORD_SETTING_KEY,
+            value=password_hash,
+            description="Admin password hash",
+        )
+        db.add(setting)
+    else:
+        setting.value = password_hash
+    db.commit()
+
+
 @router.post("/login", response_model=LoginResponse)
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     from app.utils.auth import create_access_token
-    # Simple hardcoded admin for now, can be moved to DB later
-    ADMIN_USERNAME = "admin"
-    ADMIN_PASSWORD = "admin123"
-    if data.username != ADMIN_USERNAME or data.password != ADMIN_PASSWORD:
+
+    if data.username != ADMIN_USERNAME or not _verify_admin_password(db, data.password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_access_token({"sub": data.username})
     return LoginResponse(access_token=token, username=data.username)
+
+
+@router.put("/password")
+def change_password(
+    data: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("sub") != ADMIN_USERNAME:
+        raise HTTPException(status_code=403, detail="Only admin can change password")
+    if not _verify_admin_password(db, data.old_password):
+        raise HTTPException(status_code=400, detail="原密码不正确")
+    if data.old_password == data.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能与原密码相同")
+
+    _save_admin_password(db, data.new_password)
+    return {"message": "password updated"}
 
 
 def verify_pw(plain: str, hashed: str) -> bool:
