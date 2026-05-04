@@ -26,6 +26,11 @@
     <a-tabs v-model:activeKey="activeWorkspaceTab" class="workspace-tabs" @change="handleWorkspaceChange">
       <template #rightExtra>
         <div v-if="activeWorkspaceTab === 'programs'" class="program-tab-search">
+          <a-segmented
+            v-model:value="sequenceNumberPad"
+            :options="sequenceNumberPadOptions"
+            size="small"
+          />
           <a-input-search
             v-model:value="programSearchKeyword"
             allow-clear
@@ -58,6 +63,8 @@
             :pagination="false"
             row-key="id"
             size="middle"
+            table-layout="fixed"
+            :scroll="{ x: 1380 }"
             :row-class-name="(record: any) => record._isNew ? 'new-row' : ''"
           >
             <template #bodyCell="{ column, record }">
@@ -70,18 +77,29 @@
                   size="small"
                   style="width: 76px"
                 />
-                <span v-else style="font-weight: 500">{{ record.sequence_number }}</span>
+                <span v-else class="sequence-number-text">{{ formatSequenceNumber(record.sequence_number) }}</span>
               </template>
 
               <template v-if="column.dataIndex === 'name'">
-                <a-input
-                  v-if="record._isNew || editableData[record.id]"
-                  :value="record._isNew ? record.name : editableData[record.id]?.name"
-                  @change="(e: any) => record._isNew ? (record.name = e.target.value) : (editableData[record.id].name = e.target.value)"
-                  size="small"
-                  placeholder="节目名称"
-                />
-                <span v-else>{{ record.name }}</span>
+                <div class="program-name-cell">
+                  <a-input
+                    v-if="record._isNew || editableData[record.id] || programNameDrafts[record.id] !== undefined"
+                    :ref="(el: any) => setProgramNameInputRef(record.id, el)"
+                    class="program-name-editor"
+                    :value="getProgramNameValue(record)"
+                    @change="(e: any) => setProgramNameValue(record, e.target.value)"
+                    @pressEnter="handleProgramNameEnter(record)"
+                    @keydown.esc="handleProgramNameEsc(record)"
+                    @blur="handleProgramNameBlur(record)"
+                    size="small"
+                    placeholder="节目名称"
+                  />
+                  <a-tooltip v-else title="双击修改节目名称">
+                    <span class="program-name-text" @dblclick.stop="handleEditProgramName(record)">
+                      {{ record.name }}
+                    </span>
+                  </a-tooltip>
+                </div>
               </template>
 
               <template v-if="column.dataIndex === 'time_range'">
@@ -120,39 +138,49 @@
               </template>
 
               <template v-if="column.dataIndex === 'video_status'">
-                <template v-if="record.video_status === 'ready' && record.video_thumbnail_url && !failedThumbnails[record.id]">
-                  <a-tooltip title="点击预览节目">
-                    <div class="video-thumb" @click="handlePreviewVideo(record)">
-                      <img :src="record.video_thumbnail_url" class="video-thumb-img" @error="failedThumbnails[record.id] = true" />
-                      <div class="video-thumb-play"><PlayCircleOutlined /></div>
-                    </div>
-                  </a-tooltip>
-                  <a-popconfirm v-if="editableData[record.id]" title="确定删除此视频？视频将移至临时文件夹" @confirm="handleDeleteVideo(record.id)" placement="top">
-                    <a-tooltip title="删除视频">
-                      <a-button type="text" size="small" danger class="video-delete-btn">
-                        <template #icon><DeleteOutlined /></template>
-                      </a-button>
-                    </a-tooltip>
-                  </a-popconfirm>
-                </template>
-                <template v-else-if="record.video_status === 'uploading'">
-                  <a-progress :percent="uploadProgress[record.id] || 0" size="small" :stroke-width="4" style="width: 80px" />
-                </template>
-                <template v-else-if="record.video_status === 'ready' && record.video_url">
-                  <div class="video-ready-cell">
+                <template v-if="getProgramVideos(record).length > 0">
+                  <div class="video-stack-cell">
                     <a-tooltip title="点击预览节目">
-                      <div class="video-thumb video-thumb-fallback" @click="handlePreviewVideo(record)">
-                        <PlayCircleOutlined class="video-thumb-icon" />
+                      <div class="video-thumb" @click="handlePreviewVideo(record)">
+                        <img
+                          v-if="record.video_thumbnail_url && !failedThumbnails[record.id]"
+                          :src="record.video_thumbnail_url"
+                          class="video-thumb-img"
+                          @error="failedThumbnails[record.id] = true"
+                        />
+                        <PlayCircleOutlined v-else class="video-thumb-icon" />
+                        <div class="video-thumb-play"><PlayCircleOutlined /></div>
                       </div>
                     </a-tooltip>
-                    <a-popconfirm v-if="editableData[record.id]" title="确定删除此视频？视频将移至临时文件夹" @confirm="handleDeleteVideo(record.id)" placement="top">
-                      <a-tooltip title="删除视频">
+                    <a-popover trigger="click" placement="leftTop">
+                      <template #content>
+                        <div class="recording-list">
+                          <div v-for="video in getProgramVideos(record)" :key="video.id" class="recording-item">
+                            <button class="recording-main" @click="handleOpenVideo(video.storage_url)">
+                              <strong>{{ formatRecordingTime(video) }}</strong>
+                              <span>{{ video.filename }}</span>
+                            </button>
+                            <a-popconfirm title="确定删除这条录制视频？" @confirm="handleDeleteRecording(video.id)" placement="topRight">
+                              <a-button type="text" size="small" danger>
+                                <template #icon><DeleteOutlined /></template>
+                              </a-button>
+                            </a-popconfirm>
+                          </div>
+                        </div>
+                      </template>
+                      <a-button size="small" class="recording-count-btn">{{ getProgramVideos(record).length }} 条录制</a-button>
+                    </a-popover>
+                    <a-popconfirm v-if="editableData[record.id]" title="确定删除当前节目视频？视频将移至临时文件夹" @confirm="handleDeleteVideo(record.id)" placement="top">
+                      <a-tooltip title="删除当前视频">
                         <a-button type="text" size="small" danger class="video-delete-btn">
                           <template #icon><DeleteOutlined /></template>
                         </a-button>
                       </a-tooltip>
                     </a-popconfirm>
                   </div>
+                </template>
+                <template v-else-if="record.video_status === 'uploading'">
+                  <a-progress :percent="uploadProgress[record.id] || 0" size="small" :stroke-width="4" style="width: 80px" />
                 </template>
                 <a-tag v-else :color="videoStatusColor(record.video_status)">
                   {{ videoStatusText(record.video_status) }}
@@ -655,7 +683,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeftOutlined,
@@ -685,6 +713,7 @@ import {
   type PhotoItemFull,
   type PrintRecordItem,
   type Program,
+  type ProgramVideo,
 } from '@/api/admin'
 import { getThumbUrl } from '@/utils/image'
 import ActivityPhotoSync from './ActivityPhotoSync.vue'
@@ -730,12 +759,25 @@ const loading = ref(false)
 const saving = ref(false)
 const activeWorkspaceTab = ref('programs')
 const programSearchKeyword = ref('')
+const sequenceNumberPad = ref<1 | 2 | 3>(
+  ([1, 2, 3].includes(Number(localStorage.getItem('programSequencePad')))
+    ? Number(localStorage.getItem('programSequencePad'))
+    : 3) as 1 | 2 | 3
+)
+const sequenceNumberPadOptions = [
+  { label: '001', value: 3 },
+  { label: '01', value: 2 },
+  { label: '1', value: 1 },
+]
 const showExcelModal = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const uploadingProgramId = ref<number | null>(null)
 const uploadProgress = ref<Record<number, number>>({})
 const failedThumbnails = reactive<Record<number, boolean>>({})
 const editableData = ref<Record<number, any>>({})
+const programNameInputRefs = ref<Record<number, any>>({})
+const programNameDrafts = ref<Record<number, string>>({})
+const savingProgramNameIds = ref<Record<number, boolean>>({})
 const newRows = ref<any[]>([])
 let newIdCounter = -1
 
@@ -760,6 +802,7 @@ const audiencePage = ref(1)
 const audiencePageSize = ref(20)
 const audienceTotal = ref(0)
 let printRecordTimer: number | null = null
+let programRefreshTimer: number | null = null
 
 const defaultPrintTemplate: PrintTemplate = {
   templateName: '活动照片贴纸',
@@ -806,8 +849,9 @@ const filteredPrograms = computed(() => {
 
   return programs.value.filter(program => {
     const programNumber = String(program.sequence_number ?? '').toLowerCase()
+    const displayNumber = formatSequenceNumber(program.sequence_number).toLowerCase()
     const programName = (program.name || '').toLowerCase()
-    return programNumber.includes(keyword) || programName.includes(keyword)
+    return programNumber.includes(keyword) || displayNumber.includes(keyword) || programName.includes(keyword)
   })
 })
 
@@ -852,15 +896,15 @@ const excelHintData = [
 ]
 
 const editableColumns = [
-  { title: '节目号', dataIndex: 'sequence_number', key: 'sequence_number', align: 'center' as const },
-  { title: '节目名称', dataIndex: 'name', key: 'name', align: 'center' as const },
-  { title: '录制时间', dataIndex: 'time_range', key: 'time_range', align: 'center' as const },
-  { title: '时长', dataIndex: 'duration', key: 'duration', align: 'center' as const },
-  { title: '就绪模式', dataIndex: 'ready_mode', key: 'ready_mode', align: 'center' as const },
-  { title: '视频', dataIndex: 'video_status', key: 'video_status', align: 'center' as const },
-  { title: '照片', dataIndex: 'photo_count', key: 'photo_count', align: 'center' as const },
-  { title: '就绪', dataIndex: 'ready_status', key: 'ready_status', align: 'center' as const },
-  { title: '操作', key: 'actions', align: 'center' as const },
+  { title: '节目号', dataIndex: 'sequence_number', key: 'sequence_number', width: 90, align: 'center' as const },
+  { title: '节目名称', dataIndex: 'name', key: 'name', width: 280, align: 'center' as const },
+  { title: '录制时间', dataIndex: 'time_range', key: 'time_range', width: 230, align: 'center' as const },
+  { title: '时长', dataIndex: 'duration', key: 'duration', width: 90, align: 'center' as const },
+  { title: '就绪模式', dataIndex: 'ready_mode', key: 'ready_mode', width: 110, align: 'center' as const },
+  { title: '视频', dataIndex: 'video_status', key: 'video_status', width: 230, align: 'center' as const },
+  { title: '照片', dataIndex: 'photo_count', key: 'photo_count', width: 80, align: 'center' as const },
+  { title: '就绪', dataIndex: 'ready_status', key: 'ready_status', width: 90, align: 'center' as const },
+  { title: '操作', key: 'actions', width: 180, align: 'center' as const },
 ]
 
 const printRecordColumns = [
@@ -918,6 +962,7 @@ const textPositionOptions = [
 
 const formatTime = (time: string) => dayjs(time).format('YYYY-MM-DD HH:mm:ss')
 const formatNullableTime = (time?: string | null) => time ? dayjs(time).format('YYYY-MM-DD HH:mm:ss') : '--'
+const formatSequenceNumber = (value?: number | null) => String(value ?? '').padStart(sequenceNumberPad.value, '0')
 
 const formatDuration = (seconds: number) => {
   const minutes = Math.floor(seconds / 60)
@@ -927,6 +972,16 @@ const formatDuration = (seconds: number) => {
 
 const videoStatusColor = (status: string) => ({ none: 'default', uploading: 'processing', ready: 'success' }[status] || 'default')
 const videoStatusText = (status: string) => ({ none: '未上传', uploading: '上传中', ready: '已就绪' }[status] || status)
+const getProgramVideos = (record: Program) => record.videos ?? []
+
+const formatRecordingTime = (video: ProgramVideo) => {
+  if (video.recorded_at) return formatTime(video.recorded_at)
+  return formatTime(video.created_at)
+}
+
+watch(sequenceNumberPad, value => {
+  localStorage.setItem('programSequencePad', String(value))
+})
 
 const printStatusColor = (status: string) => ({
   queued: 'blue',
@@ -963,6 +1018,35 @@ const fetchData = async () => {
     message.error('加载数据失败')
   } finally {
     loading.value = false
+  }
+}
+
+const refreshProgramsSilently = async () => {
+  if (activeWorkspaceTab.value !== 'programs') return
+  if (Object.keys(editableData.value).length > 0 || newRows.value.length > 0) return
+  try {
+    const res = await adminApi.listPrograms(activityId.value)
+    programs.value = res.data
+    Object.keys(failedThumbnails).forEach(key => {
+      const id = Number(key)
+      if (!programs.value.some(program => program.id === id)) {
+        delete failedThumbnails[id]
+      }
+    })
+  } catch {
+    // keep live refresh quiet; manual refresh still reports errors
+  }
+}
+
+const startProgramRefreshPolling = () => {
+  stopProgramRefreshPolling()
+  programRefreshTimer = window.setInterval(refreshProgramsSilently, 3000)
+}
+
+const stopProgramRefreshPolling = () => {
+  if (programRefreshTimer) {
+    window.clearInterval(programRefreshTimer)
+    programRefreshTimer = null
   }
 }
 
@@ -1212,8 +1296,94 @@ const handleEditInline = (record: Program) => {
   }
 }
 
+const setProgramNameInputRef = (id: number, el: any) => {
+  if (el) {
+    programNameInputRefs.value[id] = el
+  } else {
+    delete programNameInputRefs.value[id]
+  }
+}
+
+const focusProgramNameInput = async (id: number) => {
+  await nextTick()
+  programNameInputRefs.value[id]?.focus?.()
+}
+
+const handleEditProgramName = (record: Program) => {
+  programNameDrafts.value[record.id] = record.name
+  focusProgramNameInput(record.id)
+}
+
+const getProgramNameValue = (record: any) => {
+  if (record._isNew) return record.name
+  if (editableData.value[record.id]) return editableData.value[record.id].name
+  return programNameDrafts.value[record.id] ?? record.name
+}
+
+const setProgramNameValue = (record: any, value: string) => {
+  if (record._isNew) {
+    record.name = value
+  } else if (editableData.value[record.id]) {
+    editableData.value[record.id].name = value
+  } else {
+    programNameDrafts.value[record.id] = value
+  }
+}
+
+const handleProgramNameEnter = (record: any) => {
+  if (record._isNew) {
+    handleSaveNew(record)
+  } else if (editableData.value[record.id]) {
+    handleSaveInline(record)
+  } else {
+    handleSaveProgramName(record)
+  }
+}
+
+const handleProgramNameEsc = (record: any) => {
+  if (record._isNew) {
+    handleCancelNew(record.id)
+  } else if (editableData.value[record.id]) {
+    handleCancelInline(record.id)
+  } else {
+    delete programNameDrafts.value[record.id]
+  }
+}
+
+const handleProgramNameBlur = (record: any) => {
+  if (record._isNew || editableData.value[record.id] || programNameDrafts.value[record.id] === undefined) return
+  handleSaveProgramName(record)
+}
+
 const handleCancelInline = (id: number) => {
   delete editableData.value[id]
+}
+
+const handleSaveProgramName = async (record: Program) => {
+  if (savingProgramNameIds.value[record.id]) return
+
+  const nextName = programNameDrafts.value[record.id]?.trim()
+  if (!nextName) {
+    message.warning('节目名称不能为空')
+    focusProgramNameInput(record.id)
+    return
+  }
+  if (nextName === record.name) {
+    delete programNameDrafts.value[record.id]
+    return
+  }
+
+  savingProgramNameIds.value[record.id] = true
+  try {
+    await adminApi.updateProgram(record.id, { name: nextName })
+    record.name = nextName
+    delete programNameDrafts.value[record.id]
+    message.success('保存成功')
+  } catch {
+    message.error('保存失败')
+  } finally {
+    savingProgramNameIds.value[record.id] = false
+  }
 }
 
 const handleSaveInline = async (record: Program) => {
@@ -1329,6 +1499,24 @@ const handlePreviewVideo = (record: Program) => {
   window.open(`/p/${record.access_token}`, '_blank')
 }
 
+const handleOpenVideo = (url?: string | null) => {
+  if (!url) {
+    message.warning('这条录制没有可打开的视频链接')
+    return
+  }
+  window.open(url, '_blank')
+}
+
+const handleDeleteRecording = async (videoId: number) => {
+  try {
+    await uploadApi.deleteDesktopVideo(videoId)
+    message.success('录制视频已删除')
+    fetchData()
+  } catch {
+    message.error('删除录制视频失败')
+  }
+}
+
 const handleDeleteVideo = async (programId: number) => {
   try {
     await uploadApi.deleteVideo(programId)
@@ -1427,9 +1615,11 @@ const handleDelete = async (id: number) => {
 onMounted(async () => {
   await fetchData()
   await loadPrintTemplate()
+  startProgramRefreshPolling()
 })
 
 onUnmounted(() => {
+  stopProgramRefreshPolling()
   stopPrintRecordPolling()
 })
 </script>
@@ -1452,14 +1642,65 @@ onUnmounted(() => {
 }
 
 .program-tab-search {
-  width: 320px;
-  max-width: 38vw;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 520px;
+  max-width: 48vw;
+}
+
+.sequence-number-text {
+  display: inline-block;
+  min-width: 34px;
+  color: #111827;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .muted-inline {
   margin-left: 8px;
   font-size: 12px;
   color: #8c8c8c;
+}
+
+.program-name-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(240px, 100%);
+  min-height: 32px;
+  margin: 0 auto;
+}
+
+.program-name-text,
+.program-name-editor {
+  width: 100%;
+  height: 28px;
+  box-sizing: border-box;
+}
+
+.program-name-text {
+  display: block;
+  padding: 2px 6px;
+  overflow: hidden;
+  border-radius: 4px;
+  color: #111827;
+  cursor: text;
+  line-height: 24px;
+  text-align: center;
+  text-overflow: ellipsis;
+  transition: background-color 0.18s, color 0.18s;
+  white-space: nowrap;
+}
+
+.program-name-text:hover {
+  background-color: #f0f7ff;
+  color: #1677ff;
+}
+
+.program-name-editor {
+  text-align: center;
 }
 
 .excel-import {
@@ -1479,6 +1720,13 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 4px;
+}
+
+.video-stack-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .video-thumb {
@@ -1541,6 +1789,61 @@ onUnmounted(() => {
 
 .video-delete-btn {
   font-size: 14px;
+}
+
+.recording-count-btn {
+  min-width: 70px;
+  padding: 0 8px;
+  color: #0f766e;
+  border-color: #99f6e4;
+  background: #f0fdfa;
+  font-size: 12px;
+}
+
+.recording-list {
+  width: 360px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.recording-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.recording-item:last-child {
+  border-bottom: 0;
+}
+
+.recording-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recording-main strong {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recording-main span {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-photo-panel,

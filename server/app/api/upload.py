@@ -2,10 +2,11 @@ import os
 import uuid
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, Any
 from pydantic import BaseModel
 
 from app.database import get_db
@@ -130,6 +131,70 @@ class VideoConfirmRequest(BaseModel):
     file_size: int
 
 
+class DesktopUploadInitRequest(BaseModel):
+    activity_id: int
+    program_id: Optional[int] = None
+    program_number: Optional[int] = None
+    program_name: Optional[str] = None
+    filename: str
+    file_size: int
+    recorded_at: Optional[datetime] = None
+    source: Optional[str] = "supertech-AutoUploadVideo"
+
+
+class DesktopUploadInitResponse(BaseModel):
+    upload_id: str
+    storage_key: str
+    provider: str
+    program_id: int
+    program_name: str
+    program_sequence_number: int
+    upload_url: Optional[str] = None
+    upload_token: Optional[str] = None
+    resume_config: dict[str, Any] = {}
+    supported: bool = True
+    unsupported_reason: Optional[str] = None
+
+
+class DesktopUploadCompleteRequest(BaseModel):
+    upload_id: str
+    activity_id: int
+    program_id: Optional[int] = None
+    program_number: Optional[int] = None
+    program_name: Optional[str] = None
+    storage_key: str
+    filename: str
+    file_size: int
+    etag: Optional[str] = None
+    file_hash: Optional[str] = None
+    recorded_at: Optional[datetime] = None
+    source: Optional[str] = "supertech-AutoUploadVideo"
+
+
+class DesktopUploadAbortRequest(BaseModel):
+    upload_id: str
+    storage_key: Optional[str] = None
+    provider_upload_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class DesktopVideoOut(BaseModel):
+    id: int
+    activity_id: int
+    program_id: int
+    program_name: str
+    program_sequence_number: int
+    filename: str
+    file_size: Optional[int]
+    recorded_at: Optional[datetime] = None
+    storage_url: Optional[str]
+    storage_provider: str
+    upload_type: str
+    upload_source: Optional[str]
+    status: str
+    created_at: datetime
+
+
 # ── Delete video ────────────────────────────────────────────────────
 
 @router.delete("/video/{program_id}")
@@ -233,6 +298,294 @@ async def confirm_video_upload(
     db.refresh(video)
 
     return {"id": video.id, "storage_url": storage_url, "status": "ready"}
+
+
+# ── Desktop direct-to-cloud upload ──────────────────────────────────
+
+def _apply_recorded_at(program: Program, recorded_at: Optional[datetime]):
+    if not recorded_at:
+        return
+    program.start_time = recorded_at
+    if program.duration is not None:
+        program.end_time = recorded_at + timedelta(seconds=program.duration)
+
+
+def _resolve_desktop_program(
+    db: Session,
+    activity_id: int,
+    program_id: Optional[int] = None,
+    program_number: Optional[int] = None,
+    program_name: Optional[str] = None,
+) -> tuple[Program, bool]:
+    parsed_name = program_name.strip() if program_name else ""
+    program: Optional[Program] = None
+
+    if program_number is not None:
+        program = (
+            db.query(Program)
+            .filter(
+                Program.activity_id == activity_id,
+                Program.sequence_number == program_number,
+            )
+            .first()
+        )
+
+    if not program and program_id is not None:
+        program = (
+            db.query(Program)
+            .filter(
+                Program.id == program_id,
+                Program.activity_id == activity_id,
+            )
+            .first()
+        )
+
+    if not program and parsed_name:
+        program = (
+            db.query(Program)
+            .filter(
+                Program.activity_id == activity_id,
+                Program.name == parsed_name,
+            )
+            .first()
+        )
+
+    changed = False
+    if program:
+        if parsed_name and program.name != parsed_name:
+            program.name = parsed_name
+            changed = True
+        return program, changed
+
+    activity = db.query(Activity).filter(Activity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+
+    if program_number is None:
+        max_sequence = (
+            db.query(func.max(Program.sequence_number))
+            .filter(Program.activity_id == activity_id)
+            .scalar()
+        ) or 0
+        program_number = max_sequence + 1
+
+    program = Program(
+        activity_id=activity_id,
+        sequence_number=program_number,
+        name=parsed_name or f"节目{program_number:03d}",
+    )
+    db.add(program)
+    db.flush()
+    return program, True
+
+
+def _build_desktop_video_out(video: Video) -> DesktopVideoOut:
+    program = video.program
+    return DesktopVideoOut(
+        id=video.id,
+        activity_id=video.activity_id,
+        program_id=video.program_id,
+        program_name=program.name if program else "",
+        program_sequence_number=program.sequence_number if program else 0,
+        filename=video.filename,
+        file_size=video.file_size,
+        recorded_at=video.recorded_at,
+        storage_url=video.storage_url,
+        storage_provider=video.storage_provider.value if hasattr(video.storage_provider, "value") else str(video.storage_provider),
+        upload_type=video.upload_type.value if hasattr(video.upload_type, "value") else str(video.upload_type),
+        upload_source=video.upload_source,
+        status=video.status.value if hasattr(video.status, "value") else str(video.status),
+        created_at=video.created_at,
+    )
+
+
+@router.post("/desktop/init", response_model=DesktopUploadInitResponse)
+async def init_desktop_upload(
+    body: DesktopUploadInitRequest,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    """Create a desktop upload session and return cloud direct-upload credentials."""
+    program, changed = _resolve_desktop_program(
+        db,
+        activity_id=body.activity_id,
+        program_id=body.program_id,
+        program_number=body.program_number,
+        program_name=body.program_name,
+    )
+    if changed:
+        db.commit()
+        db.refresh(program)
+
+    storage = get_storage_service()
+    provider = storage.provider_name if storage else ""
+    storage_key = _build_storage_key(program, body.filename)
+    upload_id = uuid.uuid4().hex
+
+    if provider == "qiniu":
+        return DesktopUploadInitResponse(
+            upload_id=upload_id,
+            storage_key=storage_key,
+            provider=provider,
+            program_id=program.id,
+            program_name=program.name,
+            program_sequence_number=program.sequence_number,
+            upload_url="https://up.qiniup.com",
+            upload_token=get_upload_token(storage_key, expires=24 * 3600),
+            resume_config={
+                "part_size": 4 * 1024 * 1024,
+                "concurrency": 4,
+                "resume_record_key": f"{upload_id}.progress",
+            },
+        )
+
+    return DesktopUploadInitResponse(
+        upload_id=upload_id,
+        storage_key=storage_key,
+        provider=provider or "unknown",
+        program_id=program.id,
+        program_name=program.name,
+        program_sequence_number=program.sequence_number,
+        supported=False,
+        unsupported_reason=(
+            f"Storage provider '{provider or 'unknown'}' is configured on the server, "
+            "but temporary desktop direct-upload credentials are not available. "
+            "Configure STS/CAM credentials before enabling this provider for desktop upload."
+        ),
+    )
+
+
+@router.post("/desktop/complete", response_model=DesktopVideoOut)
+async def complete_desktop_upload(
+    body: DesktopUploadCompleteRequest,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    """Register a desktop direct-uploaded video after cloud upload succeeds."""
+    program, _changed = _resolve_desktop_program(
+        db,
+        activity_id=body.activity_id,
+        program_id=body.program_id,
+        program_number=body.program_number,
+        program_name=body.program_name,
+    )
+
+    storage = get_storage_service()
+    storage_url = storage.build_url(body.storage_key) if storage else ""
+    if not storage_url:
+        raise HTTPException(status_code=500, detail="Failed to build storage URL")
+
+    video = Video(
+        program_id=program.id,
+        activity_id=body.activity_id,
+        filename=body.filename,
+        file_size=body.file_size,
+        recorded_at=body.recorded_at,
+        storage_url=storage_url,
+        storage_provider=storage.provider_name,
+        upload_type=UploadType.AUTO,
+        upload_source=body.source or "supertech-AutoUploadVideo",
+        status=UploadStatus.READY,
+    )
+    db.add(video)
+    db.flush()
+
+    program.video_url = storage_url
+    program.video_status = VideoStatus.READY
+    await _update_program_video_metadata(program, storage_url, filename=body.filename)
+    _apply_recorded_at(program, body.recorded_at)
+    if program.duration is not None:
+        video.duration = int(round(program.duration))
+    video.recorded_at = body.recorded_at or program.start_time
+
+    from app.api.admin import _match_photos_to_program
+    _match_photos_to_program(db, program)
+
+    if program.ready_mode.value == "auto" and program.is_auto_ready:
+        program.ready_status = "ready"
+
+    db.commit()
+    db.refresh(video)
+    return _build_desktop_video_out(video)
+
+
+@router.post("/desktop/abort")
+async def abort_desktop_upload(
+    body: DesktopUploadAbortRequest,
+    _user: dict = Depends(get_current_user),
+):
+    """Record a desktop upload abort. Cloud multipart cleanup is provider-specific."""
+    return {
+        "status": "aborted",
+        "upload_id": body.upload_id,
+        "storage_key": body.storage_key,
+    }
+
+
+@router.get("/desktop/videos", response_model=list[DesktopVideoOut])
+def list_desktop_videos(
+    activity_id: int,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    videos = (
+        db.query(Video)
+        .filter(Video.activity_id == activity_id)
+        .order_by(Video.created_at.desc())
+        .all()
+    )
+    return [_build_desktop_video_out(video) for video in videos]
+
+
+@router.delete("/desktop/videos/{video_id}")
+async def delete_desktop_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    program = video.program
+    storage_url = video.storage_url
+    if storage_url:
+        await _move_to_temp(storage_url)
+
+    db.delete(video)
+    db.flush()
+
+    if program and program.video_url == storage_url:
+        latest_video = (
+            db.query(Video)
+            .filter(
+                Video.program_id == program.id,
+                Video.status == UploadStatus.READY,
+            )
+            .order_by(Video.created_at.desc())
+            .first()
+        )
+        if latest_video:
+            program.video_url = latest_video.storage_url
+            program.video_status = VideoStatus.READY
+            program.duration = latest_video.duration
+            program.start_time = latest_video.recorded_at
+            program.end_time = (
+                latest_video.recorded_at + timedelta(seconds=latest_video.duration)
+                if latest_video.recorded_at and latest_video.duration is not None
+                else None
+            )
+        else:
+            program.video_url = None
+            program.video_status = VideoStatus.NONE
+            program.duration = None
+            program.start_time = None
+            program.end_time = None
+            if program.ready_mode.value == "auto":
+                program.ready_status = "pending"
+
+    db.commit()
+    return {"status": "deleted"}
 
 
 # ── OBS auto-push (server-side relay, kept for OBS compatibility) ──

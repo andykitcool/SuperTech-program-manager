@@ -52,6 +52,9 @@ class AliyunOSSAdapter(BaseStorageAdapter):
         )
         return url
 
+    def build_url(self, key: str) -> str:
+        return f"https://{self.bucket_name}.{self.endpoint}/{key}"
+
     async def test_connection(self) -> bool:
         try:
             bucket = self._get_bucket()

@@ -74,6 +74,23 @@ class ProgramUpdate(BaseModel):
     ready_status: Optional[ReadyStatus] = None
 
 
+class ProgramVideoOut(BaseModel):
+    id: int
+    filename: str
+    file_size: Optional[int]
+    duration: Optional[int]
+    recorded_at: Optional[datetime]
+    storage_url: Optional[str]
+    storage_provider: str
+    upload_type: str
+    upload_source: Optional[str]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class ProgramOut(BaseModel):
     id: int
     access_token: str
@@ -89,6 +106,7 @@ class ProgramOut(BaseModel):
     photo_count: int
     ready_mode: ReadyMode
     ready_status: ReadyStatus
+    videos: List[ProgramVideoOut] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

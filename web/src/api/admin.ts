@@ -64,9 +64,25 @@ export interface Program {
   video_url: string | null
   video_thumbnail_url: string | null
   video_status: string
+  videos?: ProgramVideo[]
   photo_count: number
   ready_mode: string
   ready_status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProgramVideo {
+  id: number
+  filename: string
+  file_size: number | null
+  duration: number | null
+  recorded_at: string | null
+  storage_url: string | null
+  storage_provider: string
+  upload_type: string
+  upload_source: string | null
+  status: string
   created_at: string
   updated_at: string
 }
@@ -204,6 +220,9 @@ export const uploadApi = {
   /** Delete a program's video (move cloud file to TEMP) */
   deleteVideo: (programId: number) =>
     request.delete(`/upload/video/${programId}`),
+
+  deleteDesktopVideo: (videoId: number) =>
+    request.delete(`/upload/desktop/videos/${videoId}`),
 
   importProgramsExcel: (activityId: number, file: File) => {
     const formData = new FormData()

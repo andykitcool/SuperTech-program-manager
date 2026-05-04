@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.database import get_db
 from app.utils.auth import get_current_user
 from app.models import Activity, Program, ReadyMode, Video, Photo, SystemSettings, PrintRecord, Audience
-from app.schemas.activity import ActivityCreate, ActivityUpdate, ActivityOut, ProgramCreate, ProgramUpdate, ProgramOut
+from app.schemas.activity import ActivityCreate, ActivityUpdate, ActivityOut, ProgramCreate, ProgramUpdate, ProgramOut, ProgramVideoOut
 from app.schemas.program import ProgramBatchCreate
 
 router = APIRouter()
@@ -216,6 +216,23 @@ def list_programs(
     for p in programs:
         out = ProgramOut.model_validate(p)
         out.video_thumbnail_url = get_video_thumbnail_url(p.video_url) if p.video_url else None
+        out.videos = [
+            ProgramVideoOut(
+                id=video.id,
+                filename=video.filename,
+                file_size=video.file_size,
+                duration=video.duration,
+                recorded_at=video.recorded_at,
+                storage_url=video.storage_url,
+                storage_provider=video.storage_provider.value if hasattr(video.storage_provider, "value") else str(video.storage_provider),
+                upload_type=video.upload_type.value if hasattr(video.upload_type, "value") else str(video.upload_type),
+                upload_source=video.upload_source,
+                status=video.status.value if hasattr(video.status, "value") else str(video.status),
+                created_at=video.created_at,
+                updated_at=video.updated_at,
+            )
+            for video in sorted(p.videos, key=lambda item: item.created_at, reverse=True)
+        ]
         result.append(out)
     return result
 

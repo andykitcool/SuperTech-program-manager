@@ -20,6 +20,7 @@ class Video(Base):
     filename: Mapped[str] = mapped_column(String(500), nullable=False)
     file_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     duration: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    recorded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     storage_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     storage_provider: Mapped[StorageProvider] = mapped_column(
         SAEnum(StorageProvider), default=StorageProvider.ALIYUN

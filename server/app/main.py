@@ -49,6 +49,20 @@ def _ensure_activity_time_columns():
         db.close()
 
 
+def _ensure_video_recorded_at_column():
+    """Add per-video recorded_at column for repeated recordings."""
+    from sqlalchemy import text
+
+    db = SessionLocal()
+    try:
+        result = db.execute(text("SHOW COLUMNS FROM videos LIKE 'recorded_at'"))
+        if not result.fetchone():
+            db.execute(text("ALTER TABLE videos ADD COLUMN recorded_at DATETIME NULL AFTER duration"))
+            db.commit()
+    finally:
+        db.close()
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="SuperTech Program Manager",
@@ -62,6 +76,7 @@ def create_app() -> FastAPI:
     # Backfill access_token for existing programs
     _backfill_access_tokens()
     _ensure_activity_time_columns()
+    _ensure_video_recorded_at_column()
 
     import os
     os.makedirs("uploads", exist_ok=True)
