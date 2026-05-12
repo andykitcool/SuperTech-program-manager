@@ -115,6 +115,9 @@ docker compose up -d
 
 ```
 ├── docker-compose.yml        # Docker Compose 编排
+├── docs/                     # 文档
+│   ├── coze-api-guide.md     # COZE 智能体 API 指南
+│   └── coze-setup-guide.md   # COZE 智能体配置与微信服务号对接指南
 ├── server/                   # 后端
 │   ├── app/
 │   │   ├── main.py           # 应用入口
@@ -179,6 +182,7 @@ docker compose up -d
 
 | 方法 | 路径 | 功能 |
 |------|------|------|
+| GET | `/public/programs/search` | 跨活动搜索节目（COZE 智能体专用） |
 | GET | `/public/programs/{token}` | 获取节目信息 |
 | GET | `/public/programs/{token}/photos` | 获取节目照片 |
 | POST | `/public/programs/{token}/photos/{photo_id}/print` | 家长端照片打印 |

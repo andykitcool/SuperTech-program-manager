@@ -7,6 +7,10 @@ from app.models.settings import SystemSettings
 from app.models.sync_task import SyncTask, SyncTaskStatus
 from app.models.print_record import PrintRecord
 from app.models.audience import Audience
+from app.models.music import Music
+from app.models.decoration_material import DecorationMaterial
+from app.models.download_record import DownloadRecord
+from app.models.user import AppUser, Role, UserRoleAssignment
 
 __all__ = [
     "Base",
@@ -18,4 +22,8 @@ __all__ = [
     "SyncTask", "SyncTaskStatus",
     "PrintRecord",
     "Audience",
+    "Music",
+    "DecorationMaterial",
+    "DownloadRecord",
+    "AppUser", "Role", "UserRoleAssignment",
 ]

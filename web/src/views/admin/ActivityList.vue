@@ -2,7 +2,7 @@
   <div>
     <div class="page-header">
       <h2>活动管理</h2>
-      <a-button type="primary" @click="$router.push('/admin/activity/create')">
+      <a-button v-if="!isPrintAdmin" type="primary" @click="$router.push('/admin/activity/create')">
         <template #icon><PlusOutlined /></template>
         创建活动
       </a-button>
@@ -39,9 +39,9 @@
               <div class="bottom-line">
                 <span class="venue-text">{{ item.venue || '未设置地点' }}</span>
                 <div class="card-actions">
-                  <a-button type="link" size="small" @click.stop="$router.push(`/admin/activity/${item.id}/programs`)">节目</a-button>
-                  <a-button type="link" size="small" @click.stop="$router.push(`/admin/activity/${item.id}/edit`)">编辑</a-button>
-                  <a-popconfirm title="确定删除此活动？" @confirm.stop="handleDelete(item.id)">
+                  <a-button type="link" size="small" @click.stop="$router.push(`/admin/activity/${item.id}/programs`)">{{ isPrintAdmin ? '打印' : '节目' }}</a-button>
+                  <a-button v-if="!isPrintAdmin" type="link" size="small" @click.stop="$router.push(`/admin/activity/${item.id}/edit`)">编辑</a-button>
+                  <a-popconfirm v-if="!isPrintAdmin" title="确定删除此活动？" @confirm.stop="handleDelete(item.id)">
                     <a-button type="link" size="small" danger @click.stop>删除</a-button>
                   </a-popconfirm>
                 </div>
@@ -55,13 +55,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { CalendarOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import { adminApi, type Activity } from '@/api/admin'
+import { useAuthStore } from '@/stores/auth'
 
 const defaultCoverImage = 'https://images.unsplash.com/photo-1511795409834-ef04bbd61622?auto=format&fit=crop&w=900&q=80'
+const auth = useAuthStore()
+const isPrintAdmin = computed(() => auth.isPrintAdmin())
 const activities = ref<Activity[]>([])
 const loading = ref(false)
 

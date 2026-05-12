@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../supertech-AutoUploadVideo"
+		},
+		{
+			"path": "../supertech-DanceMusicPlayer"
+		},
+		{
+			"path": "../supertech-PhotoPrinter"
+		}
+	],
+	"settings": {}
+}

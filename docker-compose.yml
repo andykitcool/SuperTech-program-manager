@@ -6,11 +6,13 @@ services:
       MYSQL_DATABASE: supertech_pm
       MYSQL_CHARSET: utf8mb4
       MYSQL_COLLATION: utf8mb4_unicode_ci
+      TZ: Asia/Shanghai
     command: >
       --innodb-buffer-pool-size=256M
       --max-connections=50
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
+      --default-time-zone=+08:00
     ports:
       - "3306:3306"
     volumes:
@@ -33,8 +35,12 @@ services:
       DB_USER: root
       DB_PASSWORD: supertech123
       DB_NAME: supertech_pm
-      JWT_SECRET_KEY: change-this-to-a-secure-random-string
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-admin123}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       DEFAULT_STORAGE_PROVIDER: aliyun
+      TZ: Asia/Shanghai
     depends_on:
       db:
         condition: service_healthy
@@ -49,8 +55,12 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:80"
+      - "443:443"
     depends_on:
       - api
+    volumes:
+      - ./server/uploads/network/nginx:/etc/nginx/network
+      - ./server/uploads/network/ssl:/etc/nginx/ssl:ro
 
 volumes:
   mysql_data:

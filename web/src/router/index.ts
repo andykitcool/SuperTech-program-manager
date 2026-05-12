@@ -41,6 +41,11 @@ const router = createRouter({
           component: () => import('@/views/admin/Settings.vue'),
         },
         {
+          path: 'users',
+          name: 'UserManagement',
+          component: () => import('@/views/admin/UserManagement.vue'),
+        },
+        {
           path: 'change-password',
           name: 'ChangePassword',
           component: () => import('@/views/admin/ChangePassword.vue'),
@@ -60,6 +65,26 @@ const router = createRouter({
           name: 'PhotoGallery',
           component: () => import('@/views/admin/PhotoGallery.vue'),
         },
+        {
+          path: 'music-library',
+          name: 'MusicLibrary',
+          component: () => import('@/views/admin/MusicLibrary.vue'),
+        },
+        {
+          path: 'decoration-manager',
+          name: 'DecorationManager',
+          component: () => import('@/views/admin/DecorationManager.vue'),
+        },
+        {
+          path: 'print-settings',
+          name: 'PrintSettings',
+          component: () => import('@/views/admin/PrintSettings.vue'),
+        },
+        {
+          path: 'print-orders',
+          name: 'PrintOrders',
+          component: () => import('@/views/admin/PrintOrders.vue'),
+        },
       ],
     },
 
@@ -73,6 +98,23 @@ const router = createRouter({
       path: '/a/:pathMatch(.*)*',
       name: 'NotFoundActivity',
       component: () => import('@/views/public/NotFound.vue'),
+    },
+    {
+      path: '/lobby/:activityId',
+      name: 'LobbyPlayer',
+      component: () => import('@/views/lobby/LobbyPlayer.vue'),
+    },
+    {
+      path: '/m/activity-admin',
+      name: 'MobileActivityAdmin',
+      component: () => import('@/views/mobile/MobileActivityAdmin.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/m/print-admin',
+      name: 'MobilePrintAdmin',
+      component: () => import('@/views/mobile/MobilePrintAdmin.vue'),
+      meta: { requiresAuth: true },
     },
     {
       path: '/p/index',

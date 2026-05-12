@@ -32,6 +32,8 @@ class Program(Base):
     video_status: Mapped[VideoStatus] = mapped_column(
         SAEnum(VideoStatus), default=VideoStatus.NONE
     )
+    short_video_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True, comment="短视频地址")
+    short_video_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=False, default="none", comment="短视频状态: none/generating/ready/failed")
     photo_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     ready_mode: Mapped[ReadyMode] = mapped_column(
         SAEnum(ReadyMode), default=ReadyMode.AUTO

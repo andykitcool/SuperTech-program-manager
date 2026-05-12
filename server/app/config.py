@@ -2,11 +2,15 @@ import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import List
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
+    # Runtime
+    ENVIRONMENT: str = "development"
+
     # Database
     DB_HOST: str = "localhost"
     DB_PORT: int = 3306
@@ -15,9 +19,15 @@ class Settings(BaseSettings):
     DB_NAME: str = "supertech_pm"
 
     # JWT
-    JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
+    JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440
+
+    # Admin bootstrap password, used only before a password hash exists in DB.
+    ADMIN_INITIAL_PASSWORD: str = "admin123"
+
+    # Comma-separated origins. Use "*" only for local development.
+    CORS_ORIGINS: str = "*"
 
     # Default Storage
     DEFAULT_STORAGE_PROVIDER: str = "aliyun"
@@ -29,6 +39,15 @@ class Settings(BaseSettings):
     # Server
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = 8000
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.lower() in {"prod", "production"}
+
+    @property
+    def cors_origins(self) -> List[str]:
+        origins = [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+        return origins or ["*"]
 
     @property
     def DATABASE_URL(self) -> str:

@@ -3,7 +3,7 @@ import uuid
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional, Any
@@ -253,6 +253,7 @@ async def get_video_upload_token(
 @router.post("/video/confirm")
 async def confirm_video_upload(
     body: VideoConfirmRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     _user: dict = Depends(get_current_user),
 ):
@@ -296,6 +297,10 @@ async def confirm_video_upload(
 
     db.commit()
     db.refresh(video)
+
+    # Auto-generate short video if enabled
+    from app.api.short_video import try_auto_generate_short_video
+    await try_auto_generate_short_video(db, program, background_tasks)
 
     return {"id": video.id, "storage_url": storage_url, "status": "ready"}
 
@@ -458,6 +463,7 @@ async def init_desktop_upload(
 @router.post("/desktop/complete", response_model=DesktopVideoOut)
 async def complete_desktop_upload(
     body: DesktopUploadCompleteRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     _user: dict = Depends(get_current_user),
 ):
@@ -506,6 +512,11 @@ async def complete_desktop_upload(
 
     db.commit()
     db.refresh(video)
+
+    # Auto-generate short video if enabled
+    from app.api.short_video import try_auto_generate_short_video
+    await try_auto_generate_short_video(db, program, background_tasks)
+
     return _build_desktop_video_out(video)
 
 
@@ -596,6 +607,7 @@ async def auto_upload_video(
     program_name: str,
     file: UploadFile = File(...),
     upload_source: Optional[str] = Form(None),
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db),
 ):
     """API endpoint for OBS auto-push. Finds program by name+activity, uploads video."""
@@ -645,5 +657,10 @@ async def auto_upload_video(
         program.ready_status = "ready"
 
     db.commit()
+
+    # Auto-generate short video if enabled
+    if background_tasks:
+        from app.api.short_video import try_auto_generate_short_video
+        await try_auto_generate_short_video(db, program, background_tasks)
 
     return {"id": video.id, "storage_url": storage_url, "program_id": program.id, "status": "ready"}

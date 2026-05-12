@@ -7,6 +7,15 @@
       </a-button>
       <h2>{{ activity?.name || '节目管理' }}</h2>
       <a-space v-if="activeWorkspaceTab === 'programs'">
+        <div class="ready-mode-switch">
+          <span class="ready-mode-label">就绪模式</span>
+          <a-switch
+            :checked="activity?.ready_mode !== 'manual'"
+            @change="handleToggleActivityReadyMode"
+            checked-children="自动"
+            un-checked-children="手动"
+          />
+        </div>
         <a-dropdown>
           <a-button>
             <template #icon><PlusOutlined /></template>
@@ -40,7 +49,7 @@
         </div>
       </template>
 
-      <a-tab-pane key="programs" tab="节目管理">
+      <a-tab-pane v-if="!isPrintAdmin" key="programs" tab="节目管理">
         <a-spin :spinning="loading">
           <a-alert
             v-if="programs.length === 0 && !loading"
@@ -60,11 +69,19 @@
           <a-table
             :columns="editableColumns"
             :data-source="tableData"
-            :pagination="false"
+            :pagination="{
+              current: programPage,
+              pageSize: programPageSize,
+              pageSizeOptions: ['20', '50', '100'],
+              showSizeChanger: true,
+              showTotal: (total: number) => `共 ${total} 条`,
+              onChange: handleProgramPageChange,
+              onShowSizeChange: handleProgramPageSizeChange,
+            }"
             row-key="id"
             size="middle"
             table-layout="fixed"
-            :scroll="{ x: 1380 }"
+            :scroll="{ x: 1410 }"
             :row-class-name="(record: any) => record._isNew ? 'new-row' : ''"
           >
             <template #bodyCell="{ column, record }">
@@ -122,21 +139,6 @@
                 <span v-else style="color: #bfbfbf">--</span>
               </template>
 
-              <template v-if="column.dataIndex === 'ready_mode'">
-                <a-select
-                  v-if="editableData[record.id]"
-                  v-model:value="editableData[record.id].ready_mode"
-                  size="small"
-                  style="width: 100px"
-                >
-                  <a-select-option value="auto">自动</a-select-option>
-                  <a-select-option value="manual">手动</a-select-option>
-                </a-select>
-                <a-tag v-else :color="record.ready_mode === 'auto' ? 'blue' : 'orange'">
-                  {{ record.ready_mode === 'auto' ? '自动' : '手动' }}
-                </a-tag>
-              </template>
-
               <template v-if="column.dataIndex === 'video_status'">
                 <template v-if="getProgramVideos(record).length > 0">
                   <div class="video-stack-cell">
@@ -187,6 +189,41 @@
                 </a-tag>
               </template>
 
+              <template v-if="column.dataIndex === 'short_video'">
+                <div class="sv-cell">
+                  <template v-if="record.short_video_status === 'ready' && record.short_video_url">
+                    <a-tooltip title="点击查看短视频">
+                      <div class="sv-thumb" @click="handleOpenVideo(record.short_video_url)">
+                        <PlayCircleOutlined class="sv-thumb-icon" />
+                        <div class="sv-thumb-play"><PlayCircleOutlined /></div>
+                      </div>
+                    </a-tooltip>
+                  </template>
+                  <template v-else-if="record.short_video_status === 'generating'">
+                    <div class="sv-status generating">
+                      <LoadingOutlined spin />
+                      <span>生成中</span>
+                    </div>
+                  </template>
+                  <template v-else-if="record.short_video_status === 'failed'">
+                    <a-tooltip title="生成失败，可在短视频管理中重试">
+                      <div class="sv-status failed">
+                        <WarningOutlined />
+                        <span>失败</span>
+                      </div>
+                    </a-tooltip>
+                  </template>
+                  <template v-else>
+                    <a-tooltip title="点击生成短视频">
+                      <div class="sv-status none clickable" @click="handleGenerateSingleShortVideo(record)">
+                        <VideoCameraOutlined />
+                        <span>未生成</span>
+                      </div>
+                    </a-tooltip>
+                  </template>
+                </div>
+              </template>
+
               <template v-if="column.dataIndex === 'photo_count'">
                 <span style="font-size: 13px">{{ record.photo_count ?? 0 }}</span>
               </template>
@@ -195,9 +232,9 @@
                 <a-switch
                   :checked="record.ready_status === 'ready'"
                   @change="(checked: boolean) => handleToggleReady(record, checked)"
-                  :disabled="record.ready_mode === 'auto'"
+                  :disabled="activity?.ready_mode !== 'manual'"
                 />
-                <span v-if="record.ready_mode === 'auto'" class="muted-inline">自动</span>
+                <span v-if="activity?.ready_mode !== 'manual'" class="muted-inline">自动</span>
               </template>
 
               <template v-if="column.key === 'actions'">
@@ -228,7 +265,7 @@
         </a-spin>
       </a-tab-pane>
 
-      <a-tab-pane key="photo-sync" tab="照片同步">
+      <a-tab-pane v-if="!isPrintAdmin" key="photo-sync" tab="照片同步">
         <ActivityPhotoSync
           v-if="activity"
           :activity-id="activityId"
@@ -236,23 +273,35 @@
         />
       </a-tab-pane>
 
-      <a-tab-pane key="photo-manager" tab="照片管理">
+      <a-tab-pane v-if="!isPrintAdmin" key="photo-manager" tab="照片管理">
         <div class="activity-photo-panel">
           <div class="panel-toolbar">
             <div>
               <h3>已同步照片</h3>
               <p>展示当前活动下已同步入库的照片，可直接提交打印任务。</p>
             </div>
-            <a-button @click="fetchActivityPhotos" :loading="activityPhotosLoading">
-              <template #icon><ReloadOutlined /></template>
-              刷新
-            </a-button>
+            <a-space>
+              <a-button danger :disabled="photoSelectedIds.size === 0" :loading="photoDeleting" @click="handleDeleteSelectedPhotos">
+                <template #icon><DeleteOutlined /></template>
+                删除{{ photoSelectedIds.size > 0 ? ` (${photoSelectedIds.size})` : '' }}
+              </a-button>
+              <a-button @click="fetchActivityPhotos" :loading="activityPhotosLoading">
+                <template #icon><ReloadOutlined /></template>
+                刷新
+              </a-button>
+            </a-space>
           </div>
 
           <a-spin :spinning="activityPhotosLoading">
             <div v-if="activityPhotos.length > 0" class="activity-photo-grid">
-              <div v-for="photo in activityPhotos" :key="photo.id" class="activity-photo-card">
+              <div v-for="photo in activityPhotos" :key="photo.id" class="activity-photo-card" :class="{ 'activity-photo-card-selected': photoSelectedIds.has(photo.id) }">
                 <div class="activity-photo-thumb">
+                  <div class="photo-checkbox" @click.stop>
+                    <a-checkbox
+                      :checked="photoSelectedIds.has(photo.id)"
+                      @change="(e: any) => togglePhotoSelect(photo.id, e.target.checked)"
+                    />
+                  </div>
                   <img :src="getThumbUrl(photo.storage_url || photo.wotu_url || '')" :alt="photo.filename" loading="lazy" />
                   <a-button
                     type="primary"
@@ -279,10 +328,206 @@
               :page-size="activityPhotoPageSize"
               :total="activityPhotoTotal"
               show-less-items
-              @change="fetchActivityPhotos"
+              @change="(page: number) => { activityPhotoPage = page; photoSelectedIds = new Set(); fetchActivityPhotos() }"
             />
           </div>
         </div>
+      </a-tab-pane>
+
+      <a-tab-pane v-if="!isPrintAdmin" key="short-video" tab="短视频管理">
+        <div class="sv-auto-config-bar">
+          <div class="sv-auto-config-left">
+            <a-switch
+              :checked="shortVideoAutoConfig.enabled"
+              @change="handleToggleAutoGenerate"
+              checked-children="开"
+              un-checked-children="关"
+            />
+            <span class="sv-auto-config-label">视频上传后自动生成短视频</span>
+            <a-tooltip title="开启后，每当有节目视频上传完成，系统会按照下方配置自动触发短视频生成工作流">
+              <QuestionCircleOutlined style="color: #8c8c8c; cursor: help" />
+            </a-tooltip>
+          </div>
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <div v-if="shortVideoAutoConfig.enabled" class="sv-auto-config-summary">
+              <a-tag color="blue">{{ shortVideoAutoConfig.duration }}秒</a-tag>
+              <a-tag color="purple">{{ { 1: '每拍切换', 2: '每2拍', 4: '每4拍', 8: '每8拍' }[shortVideoAutoConfig.cut_intensity] || '每2拍' }}</a-tag>
+              <a-tag>{{ { random: '随机', forward: '正向', backward: '反向' }[shortVideoAutoConfig.direction] || '随机' }}</a-tag>
+              <a-tag v-if="shortVideoAutoConfig.music_id" color="green">{{ musicOptions.find(m => m.id === shortVideoAutoConfig.music_id)?.name || '指定音乐' }}</a-tag>
+              <a-tag v-else>随机音乐</a-tag>
+            </div>
+            <a-button type="primary" ghost @click="handleOpenLobbyPlayer">
+              <template #icon><DesktopOutlined /></template>
+              前厅播放
+            </a-button>
+          </div>
+        </div>
+
+        <a-tabs v-model:activeKey="shortVideoInnerTab" size="small" @change="handleShortVideoInnerChange">
+          <a-tab-pane key="sv-generate" tab="短视频生成">
+            <div class="short-video-panel">
+              <div class="panel-toolbar">
+                <div>
+                  <h3>短视频生成</h3>
+                  <p>从热门曲库中随机选择音乐，自动将节目视频剪辑为短视频（默认15秒），配乐卡点。</p>
+                </div>
+                <a-button @click="fetchShortVideoStatus" :loading="shortVideoLoading">
+                  <template #icon><ReloadOutlined /></template>
+                  刷新
+                </a-button>
+              </div>
+
+              <a-form layout="inline" class="short-video-config" style="margin-bottom: 16px">
+                <a-form-item label="短视频时长">
+                  <a-input-number v-model:value="shortVideoDuration" :min="5" :max="60" :step="5" addon-after="秒" style="width: 120px" />
+                </a-form-item>
+                <a-form-item label="卡点强度">
+                  <a-select v-model:value="shortVideoCutIntensity" style="width: 120px">
+                    <a-select-option :value="1">每拍切换</a-select-option>
+                    <a-select-option :value="2">每2拍切换</a-select-option>
+                    <a-select-option :value="4">每4拍切换</a-select-option>
+                    <a-select-option :value="8">每8拍切换</a-select-option>
+                  </a-select>
+                </a-form-item>
+                <a-form-item label="播放方向">
+                  <a-select v-model:value="shortVideoDirection" style="width: 120px">
+                    <a-select-option value="random">随机</a-select-option>
+                    <a-select-option value="forward">正向</a-select-option>
+                    <a-select-option value="backward">反向</a-select-option>
+                  </a-select>
+                </a-form-item>
+                <a-form-item label="指定音乐">
+                  <a-select v-model:value="shortVideoMusicId" style="width: 180px" allow-clear placeholder="随机选择">
+                    <a-select-option v-for="m in musicOptions" :key="m.id" :value="m.id">
+                      {{ m.name }}{{ m.duration ? ` (${Math.floor(m.duration / 60)}:${String(Math.floor(m.duration % 60)).padStart(2, '0')})` : '' }}
+                    </a-select-option>
+                  </a-select>
+                </a-form-item>
+                <a-form-item>
+                  <a-button type="primary" ghost :loading="shortVideoAutoConfigLoading" @click="handleSaveShortVideoConfig">
+                    <template #icon><SaveOutlined /></template>
+                    保存配置
+                  </a-button>
+                </a-form-item>
+              </a-form>
+              <a-alert
+                v-if="shortVideoAutoConfig.enabled"
+                type="info"
+                show-icon
+                message="自动生成已开启"
+                style="margin-bottom: 16px"
+              >
+                <template #description>
+                  视频上传后会自动按照当前配置生成短视频。修改上方配置后点击「生成短视频」按钮会同步更新自动生成配置。
+                </template>
+              </a-alert>
+
+              <a-spin :spinning="shortVideoLoading">
+                <a-table
+                  :columns="shortVideoColumns"
+                  :data-source="shortVideoPrograms"
+                  :pagination="false"
+                  row-key="id"
+                  size="small"
+                  :row-selection="{ selectedRowKeys: shortVideoSelectedIds, onChange: onShortVideoSelectChange }"
+                >
+                  <template #bodyCell="{ column, record }">
+                    <template v-if="column.dataIndex === 'sequence_number'">
+                      {{ record.sequence_number }}
+                    </template>
+                    <template v-if="column.dataIndex === 'short_video_status'">
+                      <a-tag :color="shortVideoStatusColor(record.short_video_status)">
+                        {{ shortVideoStatusText(record.short_video_status) }}
+                      </a-tag>
+                    </template>
+                    <template v-if="column.dataIndex === 'actions'">
+                      <a-space>
+                        <a-button
+                          v-if="record.short_video_status === 'ready' && record.short_video_url"
+                          type="link"
+                          size="small"
+                          @click="handleOpenVideo(record.short_video_url)"
+                        >查看</a-button>
+                        <a-popconfirm
+                          v-if="record.short_video_status === 'ready'"
+                          title="确定删除短视频？"
+                          @confirm="handleDeleteShortVideo(record.id)"
+                        >
+                          <a-button type="link" size="small" danger>删除</a-button>
+                        </a-popconfirm>
+                      </a-space>
+                    </template>
+                  </template>
+                </a-table>
+              </a-spin>
+
+              <div style="margin-top: 16px; text-align: center">
+                <a-button
+                  type="primary"
+                  :disabled="shortVideoSelectedIds.length === 0"
+                  :loading="shortVideoGenerating"
+                  @click="handleGenerateShortVideos"
+                >
+                  <template #icon><ScissorOutlined /></template>
+                  生成短视频（{{ shortVideoSelectedIds.length }} 个节目）
+                </a-button>
+                <a-button
+                  style="margin-left: 12px"
+                  :disabled="shortVideoPrograms.length === 0"
+                  @click="shortVideoSelectedIds = shortVideoPrograms.filter(p => p.video_url).map(p => p.id)"
+                >全选有视频的节目</a-button>
+              </div>
+            </div>
+          </a-tab-pane>
+
+          <a-tab-pane key="sv-list" tab="短视频列表">
+            <div class="short-video-panel">
+              <div class="panel-toolbar">
+                <div>
+                  <h3>短视频列表</h3>
+                  <p>展示当前活动下所有已生成的短视频。</p>
+                </div>
+                <a-button @click="fetchShortVideoList" :loading="shortVideoListLoading">
+                  <template #icon><ReloadOutlined /></template>
+                  刷新
+                </a-button>
+              </div>
+
+              <a-spin :spinning="shortVideoListLoading">
+                <div v-if="shortVideoReadyList.length > 0" class="short-video-grid">
+                  <div v-for="item in shortVideoReadyList" :key="item.id" class="short-video-card">
+                    <div class="short-video-card-thumb" @click="handleOpenVideo(item.short_video_url)">
+                      <PlayCircleOutlined class="short-video-card-icon" />
+                      <div class="short-video-card-play"><PlayCircleOutlined /></div>
+                    </div>
+                    <div class="short-video-card-info">
+                      <div class="short-video-card-title">{{ item.name }}</div>
+                      <div class="short-video-card-meta">
+                        <span>节目号: {{ item.sequence_number }}</span>
+                        <a-tag :color="shortVideoStatusColor(item.short_video_status)" size="small">
+                          {{ shortVideoStatusText(item.short_video_status) }}
+                        </a-tag>
+                      </div>
+                    </div>
+                    <div class="short-video-card-actions">
+                      <a-button type="link" size="small" @click="handleOpenVideo(item.short_video_url)">
+                        <template #icon><PlayCircleOutlined /></template>
+                        播放
+                      </a-button>
+                      <a-popconfirm title="确定删除短视频？" @confirm="handleDeleteShortVideo(item.id)">
+                        <a-button type="link" size="small" danger>
+                          <template #icon><DeleteOutlined /></template>
+                          删除
+                        </a-button>
+                      </a-popconfirm>
+                    </div>
+                  </div>
+                </div>
+                <a-empty v-else description="暂无已生成的短视频" style="padding: 42px 0" />
+              </a-spin>
+            </div>
+          </a-tab-pane>
+        </a-tabs>
       </a-tab-pane>
 
       <a-tab-pane key="print-records" tab="打印记录">
@@ -315,7 +560,14 @@
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'photo'">
                 <div class="print-photo-cell">
-                  <img v-if="record.photo_url" :src="getThumbUrl(record.photo_url)" :alt="record.photo_filename || '照片'" />
+                  <button
+                    v-if="getPrintImageUrl(record)"
+                    class="print-photo-thumb-button"
+                    type="button"
+                    @click="openPrintPhotoPreview(record)"
+                  >
+                    <img :src="getThumbUrl(getPrintImageUrl(record))" :alt="record.photo_filename || '送印图'" />
+                  </button>
                   <div v-else class="empty-thumb">无图</div>
                   <div>
                     <strong>{{ record.photo_filename || `照片 #${record.photo_id || '-'}` }}</strong>
@@ -343,164 +595,40 @@
                 {{ formatNullableTime(record.created_at) }}
               </template>
               <template v-if="column.key === 'actions'">
-                <a-button type="primary" size="small" @click="handleReprint(record)" :loading="reprintingId === record.id">
-                  <template #icon><PrinterOutlined /></template>
-                  重打
-                </a-button>
+                <a-space size="small">
+                  <a-button type="primary" size="small" @click="handleReprint(record)" :loading="reprintingId === record.id">
+                    <template #icon><PrinterOutlined /></template>
+                    重打
+                  </a-button>
+                  <a-popconfirm
+                    v-if="canDeletePrintRecord(record)"
+                    title="确定删除这条打印记录吗？"
+                    ok-text="删除"
+                    ok-type="danger"
+                    cancel-text="取消"
+                    @confirm="handleDeletePrintRecord(record)"
+                  >
+                    <a-button danger size="small" :loading="deletingPrintRecordId === record.id">
+                      <template #icon><DeleteOutlined /></template>
+                      删除
+                    </a-button>
+                  </a-popconfirm>
+                </a-space>
               </template>
             </template>
           </a-table>
         </div>
       </a-tab-pane>
 
-      <a-tab-pane key="print-template" tab="打印模版">
-        <div class="print-template-panel">
-          <a-alert
-            type="info"
-            show-icon
-            message="此处纸张尺寸会覆盖系统设置中的打印机默认纸张尺寸"
-            description="打印照片时优先读取当前活动的打印模版；若这里设置了纸张尺寸，将覆盖系统设置里蓝阔云打印配置的 dmPaperSize。"
-            style="margin-bottom: 16px"
-          />
-
-          <div class="template-layout">
-            <a-card title="打印规则" :bordered="false" class="template-card">
-              <a-form layout="vertical">
-                <a-row :gutter="16">
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="每用户可免费打印次数">
-                      <a-input-number v-model:value="printTemplate.freePrintLimit" :min="0" :max="99" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="模版名称">
-                      <a-input v-model:value="printTemplate.templateName" placeholder="例如：活动照片贴纸" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="纸张大小">
-                      <a-select v-model:value="printTemplate.paperKey" :options="paperOptions" @change="applyPaperPreset" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="打印纸张参数 dmPaperSize">
-                      <a-input v-model:value="printTemplate.dmPaperSize" placeholder="蓝阔任务参数，如 9 / 11 / 70 / 0" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="纸张宽度（mm）">
-                      <a-input-number v-model:value="printTemplate.paperWidthMm" :min="1" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="纸张高度（mm）">
-                      <a-input-number v-model:value="printTemplate.paperHeightMm" :min="1" style="width: 100%" />
-                    </a-form-item>
-                  </a-col>
-                </a-row>
-              </a-form>
-            </a-card>
-
-            <a-card title="视觉模版" :bordered="false" class="template-card">
-              <a-form layout="vertical">
-                <a-row :gutter="16">
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="照片适配">
-                      <a-radio-group v-model:value="printTemplate.photoFit" button-style="solid">
-                        <a-radio-button value="cover">铺满裁切</a-radio-button>
-                        <a-radio-button value="contain">完整留白</a-radio-button>
-                      </a-radio-group>
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="照片圆角">
-                      <a-slider v-model:value="printTemplate.cornerRadius" :min="0" :max="28" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="贴纸">
-                      <a-switch v-model:checked="printTemplate.stickerEnabled" checked-children="开启" un-checked-children="关闭" />
-                    </a-form-item>
-                    <a-form-item v-if="printTemplate.stickerEnabled" label="贴纸样式">
-                      <a-select v-model:value="printTemplate.stickerShape" :options="stickerOptions" />
-                    </a-form-item>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="边框">
-                      <a-switch v-model:checked="printTemplate.borderEnabled" checked-children="开启" un-checked-children="关闭" />
-                    </a-form-item>
-                    <a-space v-if="printTemplate.borderEnabled" compact>
-                      <a-select v-model:value="printTemplate.borderStyle" :options="borderStyleOptions" style="width: 120px" />
-                      <a-input-number v-model:value="printTemplate.borderWidth" :min="1" :max="24" style="width: 90px" />
-                      <input v-model="printTemplate.borderColor" type="color" class="color-input" />
-                    </a-space>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="文字">
-                      <a-switch v-model:checked="printTemplate.textEnabled" checked-children="开启" un-checked-children="关闭" />
-                    </a-form-item>
-                    <template v-if="printTemplate.textEnabled">
-                      <a-form-item label="文字内容">
-                        <a-input v-model:value="printTemplate.textContent" placeholder="支持活动名、节目名等后续替换" />
-                      </a-form-item>
-                      <a-form-item label="文字位置">
-                        <a-select v-model:value="printTemplate.textPosition" :options="textPositionOptions" />
-                      </a-form-item>
-                      <a-space compact>
-                        <a-input-number v-model:value="printTemplate.textSize" :min="8" :max="48" style="width: 110px" />
-                        <input v-model="printTemplate.textColor" type="color" class="color-input" />
-                      </a-space>
-                    </template>
-                  </a-col>
-                  <a-col :xs="24" :md="12">
-                    <a-form-item label="底图">
-                      <a-radio-group v-model:value="printTemplate.backgroundMode" button-style="solid">
-                        <a-radio-button value="color">纯色</a-radio-button>
-                        <a-radio-button value="image">图片</a-radio-button>
-                      </a-radio-group>
-                    </a-form-item>
-                    <a-form-item v-if="printTemplate.backgroundMode === 'color'" label="底色">
-                      <input v-model="printTemplate.backgroundColor" type="color" class="color-input wide" />
-                    </a-form-item>
-                    <a-form-item v-else label="底图 URL">
-                      <a-input v-model:value="printTemplate.backgroundImageUrl" placeholder="https://..." />
-                    </a-form-item>
-                  </a-col>
-                </a-row>
-              </a-form>
-            </a-card>
-
-            <a-card title="模版预览" :bordered="false" class="template-preview-card">
-              <div class="paper-preview-wrap">
-                <div class="paper-preview" :style="paperPreviewStyle">
-                  <div class="photo-slot" :style="photoSlotStyle">
-                    <PictureOutlined />
-                    <span>照片区域</span>
-                  </div>
-                  <div v-if="printTemplate.stickerEnabled" class="preview-sticker" :class="printTemplate.stickerShape">贴纸</div>
-                  <div v-if="printTemplate.textEnabled" class="preview-text" :class="printTemplate.textPosition" :style="previewTextStyle">
-                    {{ printTemplate.textContent || activity?.name || 'SuperTech' }}
-                  </div>
-                </div>
-              </div>
-              <div class="template-summary">
-                <a-tag>{{ printTemplate.paperWidthMm }} x {{ printTemplate.paperHeightMm }} mm</a-tag>
-                <a-tag color="blue">dmPaperSize: {{ printTemplate.dmPaperSize }}</a-tag>
-                <a-tag color="green">免费 {{ printTemplate.freePrintLimit }} 次/用户</a-tag>
-              </div>
-              <a-space class="template-actions">
-                <a-button type="primary" @click="savePrintTemplate" :loading="savingPrintTemplate">
-                  <template #icon><SaveOutlined /></template>
-                  保存打印模版
-                </a-button>
-                <a-button @click="resetPrintTemplate">恢复默认</a-button>
-              </a-space>
-            </a-card>
-          </div>
-        </div>
+      <a-tab-pane key="print-settings" tab="打印设置">
+        <ActivityPrintSettings :activity-id="activityId" />
       </a-tab-pane>
 
-      <a-tab-pane key="custom-share" tab="定制分享">
+      <a-tab-pane key="print-template" tab="打印模版">
+        <PrintTemplateManager :activity-id="activityId" />
+      </a-tab-pane>
+
+      <a-tab-pane v-if="!isPrintAdmin" key="custom-share" tab="定制分享">
         <div class="custom-share-panel">
           <div class="share-cover-block">
             <div>
@@ -554,7 +682,7 @@
         </div>
       </a-tab-pane>
 
-      <a-tab-pane key="audiences" tab="观众管理">
+      <a-tab-pane v-if="!isPrintAdmin" key="audiences" tab="观众管理">
         <div class="audience-panel">
           <div class="panel-toolbar">
             <div>
@@ -678,6 +806,31 @@
       </div>
     </a-modal>
 
+    <a-modal
+      v-model:open="printPhotoPreviewOpen"
+      title="被打印照片预览"
+      width="860px"
+      centered
+      class="print-photo-preview-modal"
+    >
+      <div v-if="previewPrintImageUrl" class="print-photo-preview">
+        <img :src="getPreviewUrl(previewPrintImageUrl)" :alt="previewPrintRecord?.photo_filename || '送印图'" />
+        <div class="print-photo-preview-meta">
+          <strong>{{ previewPrintRecord?.photo_filename || `照片 #${previewPrintRecord?.photo_id || '-'}` }}</strong>
+          <span>{{ previewPrintRecord?.program_sequence_number ? `节目号 ${previewPrintRecord?.program_sequence_number}` : '未关联节目' }}</span>
+        </div>
+      </div>
+      <a-empty v-else description="暂无可预览送印图" />
+      <template #footer>
+        <a-space>
+          <a-button @click="printPhotoPreviewOpen = false">关闭</a-button>
+          <a-button type="primary" :disabled="!previewPrintImageUrl" @click="downloadPrintPhotoOriginal">
+            下载送印图
+          </a-button>
+        </a-space>
+      </template>
+    </a-modal>
+
     <input ref="fileInputRef" type="file" accept="video/*" style="display: none" @change="handleFileSelected" />
   </div>
 </template>
@@ -688,59 +841,66 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeftOutlined,
   DeleteOutlined,
+  DesktopOutlined,
   DownOutlined,
   InboxOutlined,
+  LoadingOutlined,
   PictureOutlined,
   PlayCircleOutlined,
   PlusOutlined,
+  EditOutlined,
   PrinterOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
+  ScissorOutlined,
+  UndoOutlined,
   UploadOutlined,
   UserOutlined,
+  VideoCameraOutlined,
+  WarningOutlined,
 } from '@ant-design/icons-vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import request from '@/api/request'
+import { useAuthStore } from '@/stores/auth'
 import {
   adminApi,
   audienceApi,
+  materialApi,
   photoApi,
   printApi,
+  shortVideoApi,
   uploadApi,
   type Activity,
   type AudienceItem,
+  type MusicOption,
   type PhotoItemFull,
   type PrintRecordItem,
   type Program,
   type ProgramVideo,
+  type ShortVideoAutoConfig,
 } from '@/api/admin'
-import { getThumbUrl } from '@/utils/image'
+import { getPreviewUrl, getThumbUrl } from '@/utils/image'
 import ActivityPhotoSync from './ActivityPhotoSync.vue'
+import ActivityPrintSettings from './ActivityPrintSettings.vue'
+import PrintTemplateManager from './PrintTemplateManager.vue'
 
 interface PrintTemplate {
   templateName: string
   freePrintLimit: number
+  printConfigMode: 'global' | 'activity'
   paperKey: string
   dmPaperSize: string
   paperWidthMm: number
   paperHeightMm: number
-  photoFit: 'cover' | 'contain'
-  cornerRadius: number
-  stickerEnabled: boolean
-  stickerShape: string
-  borderEnabled: boolean
-  borderStyle: string
-  borderColor: string
-  borderWidth: number
-  textEnabled: boolean
-  textContent: string
-  textPosition: string
-  textColor: string
-  textSize: number
-  backgroundMode: 'color' | 'image'
-  backgroundColor: string
-  backgroundImageUrl: string
+  // 画布编辑器配置
+  canvasWidth: number
+  canvasHeight: number
+  photoInitX: number
+  photoInitY: number
+  photoInitScale: number
+  photoMargin: number
 }
 
 interface CustomShareConfig {
@@ -752,12 +912,18 @@ interface CustomShareConfig {
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+const printAdminWorkspaceTabs = new Set(['print-records', 'print-settings', 'print-template'])
+const isPrintAdmin = computed(() => auth.isPrintAdmin())
+const defaultWorkspaceTab = computed(() => isPrintAdmin.value ? 'print-records' : 'programs')
 const activityId = computed(() => Number(route.params.id))
 const activity = ref<Activity | null>(null)
 const programs = ref<Program[]>([])
 const loading = ref(false)
+const programPage = ref(1)
+const programPageSize = ref(20)
 const saving = ref(false)
-const activeWorkspaceTab = ref('programs')
+const activeWorkspaceTab = ref(defaultWorkspaceTab.value)
 const programSearchKeyword = ref('')
 const sequenceNumberPad = ref<1 | 2 | 3>(
   ([1, 2, 3].includes(Number(localStorage.getItem('programSequencePad')))
@@ -787,6 +953,9 @@ const printRecordPage = ref(1)
 const printRecordPageSize = ref(20)
 const printRecordTotal = ref(0)
 const reprintingId = ref<number | null>(null)
+const deletingPrintRecordId = ref<number | null>(null)
+const printPhotoPreviewOpen = ref(false)
+const previewPrintRecord = ref<PrintRecordItem | null>(null)
 const savingPrintTemplate = ref(false)
 const savingCustomShare = ref(false)
 const activityPhotos = ref<PhotoItemFull[]>([])
@@ -795,7 +964,38 @@ const activityPhotoPage = ref(1)
 const activityPhotoPageSize = ref(30)
 const activityPhotoTotal = ref(0)
 const printingPhotoId = ref<number | null>(null)
+const photoSelectedIds = ref<Set<number>>(new Set())
+const photoDeleting = ref(false)
 const showMaterialModal = ref(false)
+
+// Short video state
+const shortVideoInnerTab = ref('sv-generate')
+const shortVideoPrograms = ref<any[]>([])
+const shortVideoLoading = ref(false)
+const shortVideoGenerating = ref(false)
+const shortVideoSelectedIds = ref<number[]>([])
+const shortVideoDuration = ref(15)
+const shortVideoCutIntensity = ref(2)
+const shortVideoDirection = ref('random')
+const shortVideoMusicId = ref<number | null>(null)
+const musicOptions = ref<MusicOption[]>([])
+const shortVideoListLoading = ref(false)
+const shortVideoReadyList = ref<any[]>([])
+const shortVideoAutoConfig = ref<ShortVideoAutoConfig>({
+  enabled: false,
+  duration: 15,
+  cut_intensity: 2,
+  direction: 'random',
+  music_id: null,
+})
+const shortVideoAutoConfigLoading = ref(false)
+
+const shortVideoColumns = [
+  { title: '节目号', dataIndex: 'sequence_number', width: 80, align: 'center' as const },
+  { title: '节目名称', dataIndex: 'name', width: 200 },
+  { title: '短视频状态', dataIndex: 'short_video_status', width: 120, align: 'center' as const },
+  { title: '操作', dataIndex: 'actions', width: 120, align: 'center' as const },
+]
 const audiences = ref<AudienceItem[]>([])
 const audienceLoading = ref(false)
 const audiencePage = ref(1)
@@ -807,29 +1007,25 @@ let programRefreshTimer: number | null = null
 const defaultPrintTemplate: PrintTemplate = {
   templateName: '活动照片贴纸',
   freePrintLimit: 2,
+  printConfigMode: 'global',
   paperKey: 'a4',
   dmPaperSize: '9',
   paperWidthMm: 210,
   paperHeightMm: 297,
-  photoFit: 'cover',
-  cornerRadius: 8,
-  stickerEnabled: true,
-  stickerShape: 'ribbon',
-  borderEnabled: true,
-  borderStyle: 'solid',
-  borderColor: '#111827',
-  borderWidth: 4,
-  textEnabled: true,
-  textContent: 'SuperTech 快速交付',
-  textPosition: 'bottom',
-  textColor: '#111827',
-  textSize: 16,
-  backgroundMode: 'color',
-  backgroundColor: '#f7f4ee',
-  backgroundImageUrl: '',
+  // 画布编辑器配置
+  canvasWidth: 800,
+  canvasHeight: 600,
+  photoInitX: 50,
+  photoInitY: 50,
+  photoInitScale: 100,
+  photoMargin: 20,
 }
 
 const printTemplate = reactive<PrintTemplate>({ ...defaultPrintTemplate })
+const globalPrintSettings = reactive({
+  print_free_quota: defaultPrintTemplate.freePrintLimit,
+  lankuo_print_config: {} as Record<string, any>,
+})
 
 const defaultCustomShare: CustomShareConfig = {
   coverUrl: '',
@@ -857,27 +1053,70 @@ const filteredPrograms = computed(() => {
 
 const tableData = computed(() => [...newRows.value, ...filteredPrograms.value])
 
-const paperPreviewStyle = computed(() => {
-  const width = 220
-  const height = Math.min(340, Math.max(190, width * (printTemplate.paperHeightMm / printTemplate.paperWidthMm)))
+function handleProgramPageChange(page: number) {
+  programPage.value = page
+}
+
+function handleProgramPageSizeChange(_current: number, size: number) {
+  programPageSize.value = size
+  programPage.value = 1
+}
+
+const paperSizeMap: Record<string, { width: number; height: number }> = {
+  '1': { width: 216, height: 279 },
+  '5': { width: 216, height: 356 },
+  '9': { width: 210, height: 297 },
+  '11': { width: 148, height: 210 },
+  '70': { width: 105, height: 148 },
+}
+
+const toPositiveNumber = (value: unknown) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+const effectivePrintPreview = computed(() => {
+  if (printTemplate.printConfigMode === 'activity') {
+    return {
+      source: '活动设置',
+      freePrintLimit: printTemplate.freePrintLimit,
+      dmPaperSize: printTemplate.dmPaperSize,
+      paperWidthMm: printTemplate.paperWidthMm,
+      paperHeightMm: printTemplate.paperHeightMm,
+    }
+  }
+
+  const config = globalPrintSettings.lankuo_print_config || {}
+  const dmPaperSize = String(config.dmPaperSize || defaultPrintTemplate.dmPaperSize)
+  const preset = paperSizeMap[dmPaperSize]
+  let paperWidthMm = preset?.width || defaultPrintTemplate.paperWidthMm
+  let paperHeightMm = preset?.height || defaultPrintTemplate.paperHeightMm
+  if (dmPaperSize === '0') {
+    paperWidthMm = Math.round((toPositiveNumber(config.dmPaperWidth) / 10 || defaultPrintTemplate.paperWidthMm) * 10) / 10
+    paperHeightMm = Math.round((toPositiveNumber(config.dmPaperLength) / 10 || defaultPrintTemplate.paperHeightMm) * 10) / 10
+  }
+
   return {
-    width: `${width}px`,
-    height: `${height}px`,
-    backgroundColor: printTemplate.backgroundMode === 'color' ? printTemplate.backgroundColor : '#f8fafc',
-    backgroundImage: printTemplate.backgroundMode === 'image' && printTemplate.backgroundImageUrl ? `url(${printTemplate.backgroundImageUrl})` : '',
-    border: printTemplate.borderEnabled ? `${printTemplate.borderWidth}px ${printTemplate.borderStyle} ${printTemplate.borderColor}` : '1px solid #e5e7eb',
+    source: '全局设置',
+    freePrintLimit: Number(globalPrintSettings.print_free_quota ?? defaultPrintTemplate.freePrintLimit),
+    dmPaperSize,
+    paperWidthMm,
+    paperHeightMm,
   }
 })
 
-const photoSlotStyle = computed(() => ({
-  objectFit: printTemplate.photoFit,
-  borderRadius: `${printTemplate.cornerRadius}px`,
-}))
-
-const previewTextStyle = computed(() => ({
-  color: printTemplate.textColor,
-  fontSize: `${printTemplate.textSize}px`,
-}))
+const paperPreviewStyle = computed(() => {
+  const width = 220
+  const paperWidth = effectivePrintPreview.value.paperWidthMm || defaultPrintTemplate.paperWidthMm
+  const paperHeight = effectivePrintPreview.value.paperHeightMm || defaultPrintTemplate.paperHeightMm
+  const height = Math.min(340, Math.max(190, width * (paperHeight / paperWidth)))
+  return {
+    width: `${width}px`,
+    height: `${height}px`,
+    backgroundColor: '#f8fafc',
+    border: '1px solid #e5e7eb',
+  }
+})
 
 const excelResult = ref<{ success: number; failed: number } | null>(null)
 
@@ -892,7 +1131,6 @@ const excelHintData = [
   { key: '2', column: '节目号', desc: '节目号（支持：节目号、序号、编号、sequence、order）', required: '否' },
   { key: '3', column: '开始时间', desc: '录制开始时间（支持：开始时间、录制开始、start_time）', required: '否' },
   { key: '4', column: '结束时间', desc: '录制结束时间（支持：结束时间、录制结束、end_time）', required: '否' },
-  { key: '5', column: '就绪模式', desc: '自动/手动（支持：就绪模式、ready_mode）', required: '否' },
 ]
 
 const editableColumns = [
@@ -900,8 +1138,8 @@ const editableColumns = [
   { title: '节目名称', dataIndex: 'name', key: 'name', width: 280, align: 'center' as const },
   { title: '录制时间', dataIndex: 'time_range', key: 'time_range', width: 230, align: 'center' as const },
   { title: '时长', dataIndex: 'duration', key: 'duration', width: 90, align: 'center' as const },
-  { title: '就绪模式', dataIndex: 'ready_mode', key: 'ready_mode', width: 110, align: 'center' as const },
   { title: '视频', dataIndex: 'video_status', key: 'video_status', width: 230, align: 'center' as const },
+  { title: '短视频', dataIndex: 'short_video', key: 'short_video', width: 140, align: 'center' as const },
   { title: '照片', dataIndex: 'photo_count', key: 'photo_count', width: 80, align: 'center' as const },
   { title: '就绪', dataIndex: 'ready_status', key: 'ready_status', width: 90, align: 'center' as const },
   { title: '操作', key: 'actions', width: 180, align: 'center' as const },
@@ -913,7 +1151,7 @@ const printRecordColumns = [
   { title: '打印任务', key: 'job', width: 180 },
   { title: '状态', key: 'status', width: 140 },
   { title: '提交时间', key: 'created_at', width: 180 },
-  { title: '操作', key: 'actions', width: 120, align: 'center' as const },
+  { title: '操作', key: 'actions', width: 180, align: 'center' as const },
 ]
 
 const audienceColumns = [
@@ -940,25 +1178,6 @@ const paperPresets: Record<string, { dmPaperSize: string; width: number; height:
   a6: { dmPaperSize: '70', width: 105, height: 148 },
   custom: { dmPaperSize: '0', width: 100, height: 150 },
 }
-
-const stickerOptions = [
-  { label: '角标丝带', value: 'ribbon' },
-  { label: '圆形印章', value: 'stamp' },
-  { label: '底部胶片', value: 'film' },
-]
-
-const borderStyleOptions = [
-  { label: '实线', value: 'solid' },
-  { label: '虚线', value: 'dashed' },
-  { label: '点线', value: 'dotted' },
-]
-
-const textPositionOptions = [
-  { label: '顶部', value: 'top' },
-  { label: '底部', value: 'bottom' },
-  { label: '左下角', value: 'left-bottom' },
-  { label: '右下角', value: 'right-bottom' },
-]
 
 const formatTime = (time: string) => dayjs(time).format('YYYY-MM-DD HH:mm:ss')
 const formatNullableTime = (time?: string | null) => time ? dayjs(time).format('YYYY-MM-DD HH:mm:ss') : '--'
@@ -999,14 +1218,28 @@ const printStatusText = (status: string) => ({
   cancelled: '已取消',
 }[status] || status)
 
+const getPrintImageUrl = (record?: PrintRecordItem | null) => record?.print_image_url || record?.photo_url || ''
+const previewPrintImageUrl = computed(() => getPrintImageUrl(previewPrintRecord.value))
+
+const canDeletePrintRecord = (record: PrintRecordItem) => ['failed', 'queued'].includes(record.status)
+
 const maskOpenid = (openid?: string | null) => {
   if (!openid) return '-'
   return openid.length <= 6 ? openid : openid.slice(-6)
 }
 
+const fetchActivity = async () => {
+  const res = await adminApi.getActivity(activityId.value)
+  activity.value = res.data
+}
+
 const fetchData = async () => {
   loading.value = true
   try {
+    if (isPrintAdmin.value) {
+      await fetchActivity()
+      return
+    }
     const [actRes, progRes] = await Promise.all([
       adminApi.getActivity(activityId.value),
       adminApi.listPrograms(activityId.value),
@@ -1099,7 +1332,172 @@ const fetchActivityPhotos = async () => {
   }
 }
 
+function togglePhotoSelect(photoId: number, checked: boolean) {
+  const newSet = new Set(photoSelectedIds.value)
+  if (checked) {
+    newSet.add(photoId)
+  } else {
+    newSet.delete(photoId)
+  }
+  photoSelectedIds.value = newSet
+}
+
+function handleDeleteSelectedPhotos() {
+  const ids = Array.from(photoSelectedIds.value)
+  if (ids.length === 0) return
+  Modal.confirm({
+    title: '确认删除',
+    content: `确定要删除选中的 ${ids.length} 张照片吗？此操作不可恢复。`,
+    okText: '确认删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      photoDeleting.value = true
+      try {
+        await photoApi.batchDeletePhotos(ids)
+        message.success(`已删除 ${ids.length} 张照片`)
+        photoSelectedIds.value = new Set()
+        await fetchActivityPhotos()
+      } catch {
+        message.error('删除照片失败')
+      } finally {
+        photoDeleting.value = false
+      }
+    },
+  })
+}
+
+// ── Short video functions ──────────────────────────────────────────
+
+const fetchShortVideoStatus = async () => {
+  shortVideoLoading.value = true
+  try {
+    const [statusRes, musicRes] = await Promise.all([
+      shortVideoApi.getPrograms(activityId.value),
+      shortVideoApi.getMusicOptions(),
+    ])
+    shortVideoPrograms.value = statusRes.data.items
+    musicOptions.value = musicRes.data
+  } catch {
+    message.error('加载短视频状态失败')
+  } finally {
+    shortVideoLoading.value = false
+  }
+}
+
+const onShortVideoSelectChange = (selectedKeys: number[]) => {
+  shortVideoSelectedIds.value = selectedKeys
+}
+
+const shortVideoStatusColor = (status: string) => ({
+  none: 'default', generating: 'processing', ready: 'success', failed: 'error',
+}[status] || 'default')
+
+const shortVideoStatusText = (status: string) => ({
+  none: '未生成', generating: '生成中', ready: '已生成', failed: '失败',
+}[status] || status)
+
+const handleGenerateShortVideos = async () => {
+  if (shortVideoSelectedIds.value.length === 0) return
+  Modal.confirm({
+    title: '确认生成短视频',
+    content: `将为选中的 ${shortVideoSelectedIds.value.length} 个节目生成短视频（${shortVideoDuration.value}秒），这可能需要几分钟时间。`,
+    okText: '开始生成',
+    okType: 'primary',
+    cancelText: '取消',
+    onOk: async () => {
+      shortVideoGenerating.value = true
+      try {
+        const res = await shortVideoApi.generate({
+          program_ids: shortVideoSelectedIds.value,
+          duration: shortVideoDuration.value,
+          cut_intensity: shortVideoCutIntensity.value,
+          direction: shortVideoDirection.value,
+          music_id: shortVideoMusicId.value,
+        })
+        message.success(`已开始生成 ${res.data.count} 个短视频${res.data.skipped > 0 ? `，跳过 ${res.data.skipped} 个无视频节目` : ''}`)
+        shortVideoSelectedIds.value = []
+        setTimeout(() => fetchShortVideoStatus(), 5000)
+
+        // Sync auto-config with current generation settings
+        if (shortVideoAutoConfig.value.enabled) {
+          await saveAutoConfig()
+        }
+      } catch {
+        message.error('生成短视频失败')
+      } finally {
+        shortVideoGenerating.value = false
+      }
+    },
+  })
+}
+
+const fetchShortVideoList = async () => {
+  shortVideoListLoading.value = true
+  try {
+    const res = await shortVideoApi.getPrograms(activityId.value)
+    shortVideoReadyList.value = res.data.items.filter(
+      (p: any) => p.short_video_status === 'ready' || p.short_video_status === 'generating' || p.short_video_status === 'failed'
+    )
+  } catch {
+    message.error('加载短视频列表失败')
+  } finally {
+    shortVideoListLoading.value = false
+  }
+}
+
+const handleShortVideoInnerChange = (key: string) => {
+  if (key === 'sv-list') {
+    fetchShortVideoList()
+  }
+}
+
+const loadAutoConfig = async () => {
+  try {
+    const res = await shortVideoApi.getAutoConfig(activityId.value)
+    shortVideoAutoConfig.value = res.data
+    // Sync generation form with auto-config values
+    shortVideoDuration.value = res.data.duration
+    shortVideoCutIntensity.value = res.data.cut_intensity
+    shortVideoDirection.value = res.data.direction
+    shortVideoMusicId.value = res.data.music_id
+  } catch {
+    // use defaults
+  }
+}
+
+const saveAutoConfig = async () => {
+  shortVideoAutoConfigLoading.value = true
+  try {
+    const config: ShortVideoAutoConfig = {
+      enabled: shortVideoAutoConfig.value.enabled,
+      duration: shortVideoDuration.value,
+      cut_intensity: shortVideoCutIntensity.value,
+      direction: shortVideoDirection.value,
+      music_id: shortVideoMusicId.value,
+    }
+    const res = await shortVideoApi.updateAutoConfig(activityId.value, config)
+    shortVideoAutoConfig.value = res.data
+  } catch {
+    message.error('保存自动生成配置失败')
+  } finally {
+    shortVideoAutoConfigLoading.value = false
+  }
+}
+
+const handleToggleAutoGenerate = async (checked: boolean) => {
+  const prevEnabled = shortVideoAutoConfig.value.enabled
+  shortVideoAutoConfig.value.enabled = checked
+  try {
+    await saveAutoConfig()
+    message.success(checked ? '已开启自动生成短视频' : '已关闭自动生成短视频')
+  } catch {
+    shortVideoAutoConfig.value.enabled = prevEnabled
+  }
+}
+
 const loadPrintTemplate = async () => {
+  await loadGlobalPrintSettings()
   try {
     const res = await request.get(`/settings/${printTemplateSettingKey.value}`)
     if (res.data?.value) {
@@ -1110,6 +1508,17 @@ const loadPrintTemplate = async () => {
     // use default template
   }
   Object.assign(printTemplate, defaultPrintTemplate)
+}
+
+const loadGlobalPrintSettings = async () => {
+  try {
+    const settings = (await materialApi.getPrintSettings() as any)?.data || {}
+    globalPrintSettings.print_free_quota = Number(settings.print_free_quota ?? defaultPrintTemplate.freePrintLimit)
+    globalPrintSettings.lankuo_print_config = settings.lankuo_print_config || {}
+  } catch {
+    globalPrintSettings.print_free_quota = defaultPrintTemplate.freePrintLimit
+    globalPrintSettings.lankuo_print_config = {}
+  }
 }
 
 const savePrintTemplate = async () => {
@@ -1224,6 +1633,10 @@ const resetPrintTemplate = () => {
   Object.assign(printTemplate, defaultPrintTemplate)
 }
 
+const handlePrintConfigModeChange = (checked: boolean | string | number) => {
+  printTemplate.printConfigMode = checked ? 'activity' : 'global'
+}
+
 const applyPaperPreset = (key: string) => {
   const preset = paperPresets[key]
   if (!preset) return
@@ -1233,6 +1646,12 @@ const applyPaperPreset = (key: string) => {
 }
 
 const handleWorkspaceChange = (key: string) => {
+  if (isPrintAdmin.value && !printAdminWorkspaceTabs.has(key)) {
+    activeWorkspaceTab.value = 'print-records'
+    fetchPrintRecords()
+    startPrintRecordPolling()
+    return
+  }
   if (key !== 'print-records') {
     stopPrintRecordPolling()
   }
@@ -1242,6 +1661,10 @@ const handleWorkspaceChange = (key: string) => {
   if (key === 'print-records') {
     fetchPrintRecords()
     startPrintRecordPolling()
+  }
+  if (key === 'short-video') {
+    fetchShortVideoStatus()
+    loadAutoConfig()
   }
   if (key === 'print-template') {
     loadPrintTemplate()
@@ -1259,6 +1682,24 @@ const handlePrintRecordPageChange = (page: number) => {
   fetchPrintRecords()
 }
 
+const openPrintPhotoPreview = (record: PrintRecordItem) => {
+  previewPrintRecord.value = record
+  printPhotoPreviewOpen.value = true
+}
+
+const downloadPrintPhotoOriginal = () => {
+  const url = previewPrintImageUrl.value
+  if (!url) return
+  const link = document.createElement('a')
+  link.href = url
+  link.download = previewPrintRecord.value?.photo_filename || `print-image-${previewPrintRecord.value?.photo_id || 'sent'}`
+  link.target = '_blank'
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
 const handleReprint = async (record: PrintRecordItem) => {
   reprintingId.value = record.id
   try {
@@ -1269,6 +1710,26 @@ const handleReprint = async (record: PrintRecordItem) => {
     message.error('提交重打失败')
   } finally {
     reprintingId.value = null
+  }
+}
+
+const handleDeletePrintRecord = async (record: PrintRecordItem) => {
+  if (!canDeletePrintRecord(record)) {
+    message.warning('只有失败或排队中的打印记录可以删除')
+    return
+  }
+  deletingPrintRecordId.value = record.id
+  try {
+    await printApi.deleteRecord(record.id)
+    message.success('已删除打印记录')
+    if (printRecords.value.length === 1 && printRecordPage.value > 1) {
+      printRecordPage.value -= 1
+    }
+    await fetchPrintRecords()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || '删除打印记录失败')
+  } finally {
+    deletingPrintRecordId.value = null
   }
 }
 
@@ -1291,7 +1752,6 @@ const handleEditInline = (record: Program) => {
   editableData.value[record.id] = {
     name: record.name,
     sequence_number: record.sequence_number,
-    ready_mode: record.ready_mode,
     start_time: record.start_time ? new Date(record.start_time) : null,
   }
 }
@@ -1400,7 +1860,6 @@ const handleSaveInline = async (record: Program) => {
     const payload: any = {
       name: data.name,
       sequence_number: data.sequence_number,
-      ready_mode: data.ready_mode,
     }
     if (data.start_time !== undefined && data.start_time !== null) {
       payload.start_time = dayjs(data.start_time).format('YYYY-MM-DDTHH:mm:ss')
@@ -1432,7 +1891,6 @@ const addNewRow = () => {
     _isNew: true,
     sequence_number: programs.value.length + newRows.value.length + 1,
     name: '',
-    ready_mode: 'auto',
     start_time: null,
     end_time: null,
     video_status: 'none',
@@ -1455,7 +1913,6 @@ const handleSaveNew = async (record: any) => {
     await adminApi.createProgram(activityId.value, {
       name: record.name,
       sequence_number: record.sequence_number,
-      ready_mode: record.ready_mode,
     })
     newRows.value = newRows.value.filter(row => row.id !== record.id)
     message.success('添加成功')
@@ -1525,6 +1982,63 @@ const handleDeleteVideo = async (programId: number) => {
     fetchData()
   } catch {
     message.error('删除视频失败')
+  }
+}
+
+const handleGenerateSingleShortVideo = async (record: Program) => {
+  if (!record.video_url && getProgramVideos(record).length === 0) {
+    message.warning('该节目没有原视频，无法生成短视频')
+    return
+  }
+  try {
+    await shortVideoApi.generate({
+      program_ids: [record.id],
+      duration: shortVideoAutoConfig.value.duration,
+      cut_intensity: shortVideoAutoConfig.value.cut_intensity,
+      direction: shortVideoAutoConfig.value.direction,
+      music_id: shortVideoAutoConfig.value.music_id,
+    })
+    message.success(`已开始为节目「${record.name}」生成短视频`)
+    record.short_video_status = 'generating'
+    setTimeout(() => fetchData(), 5000)
+  } catch (e: any) {
+    const detail = e.response?.data?.detail || '生成短视频失败'
+    message.error(detail)
+  }
+}
+
+const handleDeleteShortVideo = async (programId: number) => {
+  try {
+    await shortVideoApi.delete(programId)
+    message.success('短视频已删除')
+    fetchData()
+  } catch {
+    message.error('删除短视频失败')
+  }
+}
+
+const handleOpenLobbyPlayer = () => {
+  const url = `${window.location.origin}/lobby/${activityId.value}`
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+const handleSaveShortVideoConfig = async () => {
+  shortVideoAutoConfigLoading.value = true
+  try {
+    const config: ShortVideoAutoConfig = {
+      enabled: shortVideoAutoConfig.value.enabled,
+      duration: shortVideoDuration.value,
+      cut_intensity: shortVideoCutIntensity.value,
+      direction: shortVideoDirection.value,
+      music_id: shortVideoMusicId.value,
+    }
+    const res = await shortVideoApi.updateAutoConfig(activityId.value, config)
+    shortVideoAutoConfig.value = res.data
+    message.success('短视频配置已保存')
+  } catch {
+    message.error('保存短视频配置失败')
+  } finally {
+    shortVideoAutoConfigLoading.value = false
   }
 }
 
@@ -1602,6 +2116,20 @@ const handleToggleReady = async (record: Program, checked: boolean) => {
   }
 }
 
+const handleToggleActivityReadyMode = async (checked: boolean) => {
+  if (!activity.value) return
+  try {
+    const newMode = checked ? 'auto' : 'manual'
+    const res = await adminApi.updateActivity(activityId.value, { ready_mode: newMode })
+    activity.value = res.data
+    // Refresh programs to reflect cascaded ready_mode changes
+    await fetchData()
+    message.success(checked ? '已切换为自动就绪模式' : '已切换为手动就绪模式')
+  } catch {
+    message.error('切换就绪模式失败')
+  }
+}
+
 const handleDelete = async (id: number) => {
   try {
     await adminApi.deleteProgram(id)
@@ -1614,6 +2142,13 @@ const handleDelete = async (id: number) => {
 
 onMounted(async () => {
   await fetchData()
+  if (isPrintAdmin.value) {
+    activeWorkspaceTab.value = 'print-records'
+    await fetchPrintRecords()
+    startPrintRecordPolling()
+    return
+  }
+  await loadAutoConfig()
   await loadPrintTemplate()
   startProgramRefreshPolling()
 })
@@ -1635,6 +2170,18 @@ onUnmounted(() => {
 .page-header h2 {
   margin: 0;
   font-size: 20px;
+}
+
+.ready-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ready-mode-label {
+  font-size: 14px;
+  color: #595959;
+  white-space: nowrap;
 }
 
 .workspace-tabs :deep(.ant-tabs-nav) {
@@ -1791,6 +2338,104 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
+.sv-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+}
+
+.sv-thumb {
+  width: 64px;
+  height: 36px;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+  background: linear-gradient(135deg, #722ed1 0%, #b37feb 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: box-shadow 0.2s;
+}
+
+.sv-thumb:hover {
+  box-shadow: 0 2px 8px rgba(114, 46, 209, 0.35);
+}
+
+.sv-thumb-icon {
+  font-size: 18px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.sv-thumb-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0);
+  transition: background 0.2s;
+}
+
+.sv-thumb-play :deep(.anticon) {
+  font-size: 18px;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
+}
+
+.sv-thumb:hover .sv-thumb-play {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.sv-thumb:hover .sv-thumb-play :deep(.anticon) {
+  opacity: 1;
+}
+
+.sv-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.sv-status.generating {
+  color: #1677ff;
+  background: #e6f4ff;
+  border: 1px solid #91caff;
+}
+
+.sv-status.failed {
+  color: #cf1322;
+  background: #fff1f0;
+  border: 1px solid #ffa39e;
+  cursor: default;
+}
+
+.sv-status.none {
+  color: #8c8c8c;
+  background: #fafafa;
+  border: 1px solid #d9d9d9;
+}
+
+.sv-status.clickable {
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sv-status.clickable:hover {
+  color: #1677ff;
+  background: #e6f4ff;
+  border-color: #91caff;
+}
+
 .recording-count-btn {
   min-width: 70px;
   padding: 0 8px;
@@ -1847,12 +2492,387 @@ onUnmounted(() => {
 }
 
 .activity-photo-panel,
+.short-video-panel,
 .print-records-panel,
 .print-template-panel {
   background: #f7f8fb;
   border: 1px solid #edf0f5;
   border-radius: 8px;
   padding: 18px;
+}
+
+/* ── 打印模版新版样式 ── */
+.pt-panel {
+  min-height: 100%;
+}
+
+.pt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: #fff;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+.pt-header-left {}
+
+.pt-header-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.pt-header-desc {
+  font-size: 13px;
+  color: #9ca3af;
+  margin-top: 2px;
+}
+
+.pt-header-right {
+  display: flex;
+  gap: 8px;
+}
+
+.pt-body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.pt-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pt-section {
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+.pt-section-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.pt-section-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pt-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.pt-section-desc {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 1px;
+}
+
+.pt-section-body {
+  padding: 14px 18px 16px;
+}
+
+.pt-mode-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.pt-mode-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.pt-mode-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.pt-field-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pt-field-row:last-child {
+  margin-bottom: 0;
+}
+
+.pt-field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.pt-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pt-slider-row .ant-slider {
+  flex: 1;
+}
+
+.pt-slider-val {
+  font-size: 12px;
+  color: #6b7280;
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pt-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pt-color-input {
+  width: 32px;
+  height: 28px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 2px;
+  cursor: pointer;
+  background: #fff;
+}
+
+.pt-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pt-color-hex {
+  font-size: 12px;
+  color: #6b7280;
+  font-family: monospace;
+}
+
+.pt-divider {
+  height: 1px;
+  background: #f3f4f6;
+  margin: 12px 0;
+}
+
+.pt-canvas-hint {
+  font-size: 11px;
+  color: #9ca3af;
+  background: #f9fafb;
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+/* 右侧预览 */
+.pt-preview {
+  position: relative;
+}
+
+.pt-preview-sticky {
+  position: sticky;
+  top: 16px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+.pt-preview-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 14px;
+  text-align: center;
+}
+
+.pt-preview-canvas {
+  margin-bottom: 16px;
+}
+
+.pt-preview-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pt-tag {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #4b5563;
+  padding: 6px 10px;
+  background: #f9fafb;
+  border-radius: 6px;
+}
+
+.pt-tag-label {
+  font-weight: 500;
+  color: #9ca3af;
+  margin-right: 8px;
+}
+
+@media (max-width: 900px) {
+  .pt-body {
+    grid-template-columns: 1fr;
+  }
+  .pt-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}
+
+.sv-auto-config-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+}
+
+.sv-auto-config-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sv-auto-config-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.sv-auto-config-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.short-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.short-video-card {
+  border: 1px solid #eef1f5;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+  transition: box-shadow 0.2s;
+}
+
+.short-video-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.short-video-card-thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: linear-gradient(135deg, #722ed1 0%, #1890ff 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.short-video-card-icon {
+  font-size: 36px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.short-video-card-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0);
+  transition: background 0.2s;
+}
+
+.short-video-card-play :deep(.anticon) {
+  font-size: 28px;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
+}
+
+.short-video-card-thumb:hover .short-video-card-play {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.short-video-card-thumb:hover .short-video-card-play :deep(.anticon) {
+  opacity: 1;
+}
+
+.short-video-card-info {
+  padding: 10px 12px;
+}
+
+.short-video-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.short-video-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.short-video-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 4px 8px 8px;
+  border-top: 1px solid #f5f5f5;
 }
 
 .panel-toolbar {
@@ -1877,6 +2897,18 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.print-photo-thumb-button {
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  flex: none;
+  overflow: hidden;
+  cursor: zoom-in;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #eef1f6;
 }
 
 .print-photo-cell img,
@@ -1912,6 +2944,31 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
+.print-photo-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.print-photo-preview img {
+  width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #f5f7fb;
+}
+
+.print-photo-preview-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #4b5563;
+}
+
+.print-photo-preview-meta strong {
+  color: #111827;
+}
+
 .record-error {
   margin-top: 4px;
   color: #cf1322;
@@ -1929,6 +2986,13 @@ onUnmounted(() => {
   border: 1px solid #eef1f5;
   border-radius: 8px;
   background: #fff;
+  position: relative;
+  transition: border-color 0.2s;
+}
+
+.activity-photo-card-selected {
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
 }
 
 .activity-photo-thumb {
@@ -1948,6 +3012,13 @@ onUnmounted(() => {
 
 .activity-photo-card:hover .activity-photo-thumb img {
   transform: scale(1.035);
+}
+
+.photo-checkbox {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
 }
 
 .photo-print-button {
@@ -1985,7 +3056,7 @@ onUnmounted(() => {
 
 .template-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 300px;
+  grid-template-columns: 1fr;
   gap: 16px;
   align-items: start;
 }
@@ -2228,10 +3299,6 @@ onUnmounted(() => {
 @media (max-width: 1280px) {
   .template-layout {
     grid-template-columns: 1fr;
-  }
-
-  .template-preview-card {
-    max-width: 420px;
   }
 
   .share-cover-block {

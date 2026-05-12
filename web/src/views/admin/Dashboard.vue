@@ -20,17 +20,37 @@
           :selected-keys="selectedKeys"
           @click="handleMenuClick"
         >
-          <a-menu-item key="/admin">
+          <a-menu-item v-if="auth.hasPermission('activity.manage')" key="/admin">
             <template #icon><AppstoreOutlined /></template>
             <span>活动管理</span>
           </a-menu-item>
-          <a-menu-item key="/admin/wotu-sync">
+          <a-menu-item v-if="auth.hasPermission('sync.manage')" key="/admin/wotu-sync">
             <template #icon><CloudSyncOutlined /></template>
             <span>同步记录</span>
           </a-menu-item>
-          <a-menu-item key="/admin/photo-manager">
+          <a-menu-item v-if="auth.hasPermission('photo.manage') && !isPrintAdmin" key="/admin/photo-manager">
             <template #icon><PictureOutlined /></template>
             <span>照片管理</span>
+          </a-menu-item>
+          <a-menu-item v-if="auth.hasPermission('music.manage')" key="/admin/music-library">
+            <template #icon><CustomerServiceOutlined /></template>
+            <span>热门曲库</span>
+          </a-menu-item>
+          <a-menu-item v-if="auth.hasPermission('material.manage')" key="/admin/decoration-manager">
+            <template #icon><BgColorsOutlined /></template>
+            <span>素材管理</span>
+          </a-menu-item>
+          <a-menu-item v-if="auth.hasPermission('print.manage')" key="/admin/print-settings">
+            <template #icon><PrinterOutlined /></template>
+            <span>云印设置</span>
+          </a-menu-item>
+          <a-menu-item v-if="auth.hasPermission('print.manage')" key="/admin/print-orders">
+            <template #icon><OrderedListOutlined /></template>
+            <span>打印订单</span>
+          </a-menu-item>
+          <a-menu-item v-if="auth.hasPermission('user.manage')" key="/admin/users">
+            <template #icon><TeamOutlined /></template>
+            <span>用户管理</span>
           </a-menu-item>
         </a-menu>
 
@@ -41,7 +61,7 @@
           :selected-keys="selectedKeys"
           @click="handleMenuClick"
         >
-          <a-menu-item key="/admin/settings">
+          <a-menu-item v-if="auth.hasPermission('system.manage') || auth.hasPermission('role.manage')" key="/admin/settings">
             <template #icon><SettingOutlined /></template>
             <span>系统设置</span>
           </a-menu-item>
@@ -55,6 +75,15 @@
           <MenuFoldOutlined v-if="!collapsed" class="trigger" @click="collapsed = true" />
           <MenuUnfoldOutlined v-else class="trigger" @click="collapsed = false" />
           <span class="page-title">素材管理系统</span>
+          <a-button
+            v-if="showDeliveryButton"
+            size="small"
+            class="delivery-button"
+            @click="openDeliveryQr"
+          >
+            <template #icon><QrcodeOutlined /></template>
+            素材交付
+          </a-button>
         </div>
 
         <div class="header-right">
@@ -83,6 +112,31 @@
         <router-view />
       </a-layout-content>
     </a-layout>
+
+    <a-modal
+      v-model:open="showDeliveryModal"
+      title="素材交付二维码"
+      :footer="null"
+      width="420px"
+    >
+      <a-spin :spinning="deliveryLoading">
+        <div class="delivery-qr-panel">
+          <a-qrcode v-if="deliveryUrl" :value="deliveryUrl" :size="220" />
+          <a-empty v-else description="暂未生成交付链接" />
+          <div class="delivery-url">{{ deliveryUrl || '请先在系统设置中配置域名' }}</div>
+          <a-space>
+            <a-button :disabled="!deliveryUrl" @click="copyDeliveryUrl">
+              <template #icon><CopyOutlined /></template>
+              复制链接
+            </a-button>
+            <a-button type="primary" :disabled="!deliveryUrl" @click="openDeliveryUrl">
+              <template #icon><LinkOutlined /></template>
+              打开页面
+            </a-button>
+          </a-space>
+        </div>
+      </a-spin>
+    </a-modal>
   </a-layout>
 </template>
 
@@ -92,20 +146,35 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   AppstoreOutlined,
   CloudSyncOutlined,
+  CustomerServiceOutlined,
   LockOutlined,
   LogoutOutlined,
+  LinkOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  OrderedListOutlined,
   PictureOutlined,
+  QrcodeOutlined,
   SettingOutlined,
+  TeamOutlined,
   UserOutlined,
+  BgColorsOutlined,
+  CopyOutlined,
+  PrinterOutlined,
 } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
+import request from '@/api/request'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 const collapsed = ref(false)
+const isPrintAdmin = computed(() => auth.isPrintAdmin())
+const showDeliveryModal = ref(false)
+const deliveryLoading = ref(false)
+const deliveryUrl = ref('')
+const showDeliveryButton = computed(() => route.name === 'ProgramList' && Boolean(route.params.id))
 
 const selectedKeys = computed(() => {
   if (route.path === '/admin/change-password') return []
@@ -119,6 +188,50 @@ const handleMenuClick = ({ key }: { key: string }) => {
 const handleLogout = () => {
   auth.logout()
   router.push('/admin/login')
+}
+
+const fallbackBaseUrl = () => window.location.origin.replace(/\/+$/, '')
+
+const normalizeBaseUrl = (value?: string | null) => {
+  const text = String(value || '').trim().replace(/\/+$/, '')
+  return text || fallbackBaseUrl()
+}
+
+const resolvePublicBaseUrl = async () => {
+  try {
+    const res = await request.get('/settings/network')
+    return normalizeBaseUrl(res.data?.base_url)
+  } catch {
+    return fallbackBaseUrl()
+  }
+}
+
+const openDeliveryQr = async () => {
+  showDeliveryModal.value = true
+  deliveryLoading.value = true
+  try {
+    const baseUrl = await resolvePublicBaseUrl()
+    deliveryUrl.value = `${baseUrl}/p/${route.params.id}`
+  } catch {
+    message.error('生成交付二维码失败')
+  } finally {
+    deliveryLoading.value = false
+  }
+}
+
+const copyDeliveryUrl = async () => {
+  if (!deliveryUrl.value) return
+  try {
+    await navigator.clipboard.writeText(deliveryUrl.value)
+    message.success('交付链接已复制')
+  } catch {
+    message.warning('复制失败，请手动复制链接')
+  }
+}
+
+const openDeliveryUrl = () => {
+  if (!deliveryUrl.value) return
+  window.open(deliveryUrl.value, '_blank', 'noopener')
 }
 
 watch(() => route.path, (path) => {
@@ -206,6 +319,10 @@ watch(() => route.path, (path) => {
   color: rgba(0, 0, 0, 0.85);
 }
 
+.delivery-button {
+  margin-left: 2px;
+}
+
 .user-info {
   display: inline-flex;
   align-items: center;
@@ -225,5 +342,25 @@ watch(() => route.path, (path) => {
   background: #fff;
   border-radius: 8px;
   min-height: 280px;
+}
+
+.delivery-qr-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0 4px;
+}
+
+.delivery-url {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f6f8fb;
+  color: #4b5565;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+  word-break: break-all;
 }
 </style>

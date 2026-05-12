@@ -23,6 +23,9 @@ request.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('username')
+      localStorage.removeItem('permissions')
+      localStorage.removeItem('role_codes')
+      localStorage.removeItem('activity_ids')
       window.location.href = '/admin/login'
       message.error('登录已过期，请重新登录')
     } else if (error.response?.data?.detail) {

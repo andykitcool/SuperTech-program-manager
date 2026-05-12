@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from app.database import get_db
 from app.utils.auth import get_current_user
+from app.utils.rbac import allowed_activity_ids, require_activity_access
 from app.services.wotu_sync import wotu_sync_manager
 from app.models import Activity, Photo
 from app.schemas.photo import PhotoOut
@@ -28,15 +29,13 @@ class SyncStartRequest(BaseModel):
 def start_sync(
     data: SyncStartRequest,
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """启动喔图照片同步"""
     if wotu_sync_manager.running:
         raise HTTPException(status_code=400, detail="任务正在运行中")
 
-    activity = db.query(Activity).filter(Activity.id == data.activity_id).first()
-    if not activity:
-        raise HTTPException(status_code=404, detail="活动不存在")
+    activity = require_activity_access(db, current_user, data.activity_id, "activity.manage")
 
     storage_prefix = activity.storage_path_prefix or f"activities/{activity.id}"
 
@@ -95,14 +94,20 @@ def sync_logs(
 @router.get("/sync/activities")
 def sync_activities(
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """获取所有未过期活动列表（用于选择）"""
     from datetime import date
     today = date.today()
-    activities = db.query(Activity).filter(
+    query = db.query(Activity).filter(
         (Activity.event_date.is_(None)) | (Activity.event_date >= today),
-    ).order_by(Activity.event_date.desc(), Activity.created_at.desc()).all()
+    )
+    ids = allowed_activity_ids(current_user)
+    if ids is not None:
+        if not ids:
+            return []
+        query = query.filter(Activity.id.in_(ids))
+    activities = query.order_by(Activity.event_date.desc(), Activity.created_at.desc()).all()
 
     result = []
     for a in activities:
@@ -194,10 +199,10 @@ def sync_history(
 @router.get("/photos/activities")
 def list_photo_activities(
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """获取有同步照片的活动列表（用于照片管理卡片展示）"""
-    results = db.query(
+    query = db.query(
         Activity.id,
         Activity.name,
         Activity.event_date,
@@ -206,9 +211,13 @@ def list_photo_activities(
         func.count(Photo.id).label("photo_count"),
     ).join(Photo, Photo.activity_id == Activity.id, isouter=True)\
      .group_by(Activity.id)\
-     .having(func.count(Photo.id) > 0)\
-     .order_by(Activity.event_date.desc(), Activity.created_at.desc())\
-     .all()
+     .having(func.count(Photo.id) > 0)
+    ids = allowed_activity_ids(current_user)
+    if ids is not None:
+        if not ids:
+            return []
+        query = query.filter(Activity.id.in_(ids))
+    results = query.order_by(Activity.event_date.desc(), Activity.created_at.desc()).all()
 
     return [
         {
@@ -229,12 +238,10 @@ def list_activity_photos(
     page: int = Query(1, ge=1),
     page_size: int = Query(30, ge=1, le=100),
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """获取指定活动的照片列表"""
-    activity = db.query(Activity).filter(Activity.id == activity_id).first()
-    if not activity:
-        raise HTTPException(status_code=404, detail="活动不存在")
+    activity = require_activity_access(db, current_user, activity_id, "photo.manage")
 
     total = db.query(func.count(Photo.id)).filter(Photo.activity_id == activity_id).scalar() or 0
     photos = (
@@ -271,3 +278,75 @@ def list_activity_photos(
         "page": page,
         "page_size": page_size,
     }
+
+
+class DeletePhotosRequest(BaseModel):
+    photo_ids: List[int]
+
+
+@router.delete("/photos/{photo_id}")
+async def delete_photo(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """删除单张照片"""
+    from app.api.upload import _move_to_temp
+
+    photo = db.query(Photo).filter(Photo.id == photo_id).first()
+    if not photo:
+        raise HTTPException(status_code=404, detail="照片不存在")
+    require_activity_access(db, current_user, photo.activity_id, "photo.manage")
+
+    if photo.storage_url:
+        await _move_to_temp(photo.storage_url)
+
+    db.delete(photo)
+    db.commit()
+    return {"message": "deleted", "id": photo_id}
+
+
+@router.post("/photos/batch-delete")
+async def batch_delete_photos(
+    data: DeletePhotosRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """批量删除照片"""
+    from app.api.upload import _move_to_temp
+
+    photos = db.query(Photo).filter(Photo.id.in_(data.photo_ids)).all()
+    if not photos:
+        raise HTTPException(status_code=404, detail="未找到指定照片")
+    for photo in photos:
+        require_activity_access(db, current_user, photo.activity_id, "photo.manage")
+
+    for photo in photos:
+        if photo.storage_url:
+            await _move_to_temp(photo.storage_url)
+        db.delete(photo)
+
+    db.commit()
+    return {"message": "deleted", "count": len(photos)}
+
+
+@router.delete("/photos/activity/{activity_id}/all")
+async def delete_all_activity_photos(
+    activity_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """删除指定活动的所有照片"""
+    from app.api.upload import _move_to_temp
+
+    require_activity_access(db, current_user, activity_id, "photo.manage")
+
+    photos = db.query(Photo).filter(Photo.activity_id == activity_id).all()
+    count = len(photos)
+    for photo in photos:
+        if photo.storage_url:
+            await _move_to_temp(photo.storage_url)
+        db.delete(photo)
+
+    db.commit()
+    return {"message": "deleted", "count": count}

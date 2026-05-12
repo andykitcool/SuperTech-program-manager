@@ -32,6 +32,7 @@ class ActivityUpdate(BaseModel):
     wotu_album_url: Optional[str] = None
     storage_path_prefix: Optional[str] = None
     cover_image: Optional[str] = None
+    ready_mode: Optional[ReadyMode] = None
 
 
 class ActivityOut(BaseModel):
@@ -47,6 +48,7 @@ class ActivityOut(BaseModel):
     wotu_album_url: Optional[str]
     storage_path_prefix: Optional[str]
     cover_image: Optional[str]
+    ready_mode: ReadyMode = ReadyMode.AUTO
     program_count: int = 0
     ready_program_count: int = 0
     created_at: datetime
@@ -103,6 +105,8 @@ class ProgramOut(BaseModel):
     video_url: Optional[str]
     video_thumbnail_url: Optional[str] = None
     video_status: VideoStatus
+    short_video_url: Optional[str] = None
+    short_video_status: Optional[str] = "none"
     photo_count: int
     ready_mode: ReadyMode
     ready_status: ReadyStatus

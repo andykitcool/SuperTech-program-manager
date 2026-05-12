@@ -1,172 +1,168 @@
 <template>
-  <div class="public-page">
-    <div class="detail-nav">
-      <span class="nav-title">{{ program?.name || '节目详情' }}</span>
-    </div>
-
-    <a-spin :spinning="loading">
-      <template v-if="program">
-        <div class="video-section" v-if="program.video_url">
-          <video
-            :src="program.video_url"
-            controls
-            playsinline
-            preload="metadata"
-            class="video-player"
-          ></video>
+  <!-- 微信授权门控 -->
+  <WeChatAuthGate
+    v-if="program?.activity_id"
+    :activity-id="program.activity_id"
+    :redirect-path="currentPath"
+    @authorized="onWechatAuthorized"
+  >
+    <template #default="{ profile }">
+      <div class="public-page">
+        <!-- 顶部导航 -->
+        <div class="detail-nav">
+          <button class="nav-back" @click="goBack">
+            <ChevronLeft :size="22" />
+          </button>
+          <span class="nav-title">{{ program?.name || '节目详情' }}</span>
+          <button class="nav-user" @click="showPersonalCenter = true">
+            <Menu :size="20" />
+          </button>
         </div>
 
-        <div class="photo-section">
-          <div class="section-header">
-            <h3>
-              <CameraOutlined />
-              精彩照片
-              <span class="photo-count" v-if="photos.length > 0">（{{ totalPhotos }}张）</span>
-            </h3>
-          </div>
-
-          <a-skeleton :loading="photosLoading" active :paragraph="{ rows: 6 }">
-            <div v-if="photos.length > 0" class="photo-grid">
-              <button
-                v-for="(photo, index) in photos"
-                :key="photo.id"
-                type="button"
-                class="photo-item"
-                @click="openPreview(index)"
-              >
-                <img :src="getThumbUrl(getPhotoSource(photo))" :alt="`照片 ${index + 1}`" loading="lazy" />
-              </button>
+        <a-spin :spinning="loading">
+          <template v-if="program">
+            <!-- 视频区 -->
+            <div class="video-section" v-if="program.video_url">
+              <video
+                :src="program.video_url"
+                controls
+                playsinline
+                preload="metadata"
+                class="video-player"
+              ></video>
             </div>
-            <a-empty v-else description="暂无照片" style="padding: 40px 0" />
-          </a-skeleton>
 
-          <div class="load-more" v-if="hasMorePhotos">
-            <a-button @click="loadMorePhotos" :loading="loadingMore">
-              加载更多
-            </a-button>
-          </div>
-        </div>
-      </template>
+            <!-- 照片区 -->
+            <div class="photo-section">
+              <div class="section-header">
+                <h3>
+                  <CameraOutlined />
+                  精彩照片
+                  <span class="photo-count" v-if="photos.length > 0">（{{ totalPhotos }}张）</span>
+                </h3>
+                <button class="edit-hint" @click="showEditTip = !showEditTip">
+                  <EditOutlined :size="16" />
+                  <span v-if="showEditTip">点击照片进入编辑器</span>
+                </button>
+              </div>
 
-      <a-result
-        v-if="notFound"
-        status="404"
-        title="节目未找到"
-        sub-title="该节目不存在或素材尚未就绪，请通过公众号对话获取节目链接"
+              <a-skeleton :loading="photosLoading" active :paragraph="{ rows: 6 }">
+                <div v-if="photos.length > 0" class="photo-grid">
+                  <button
+                    v-for="(photo, index) in photos"
+                    :key="photo.id"
+                    type="button"
+                    class="photo-item"
+                    :class="{ selected: selectedPhotoIds.has(photo.id), selecting: photoSelectMode }"
+                    @click="handlePhotoTap(photo, index)"
+                    @touchstart.passive="startPhotoLongPress(photo.id)"
+                    @touchend="clearPhotoLongPress"
+                    @touchcancel="clearPhotoLongPress"
+                    @mousedown="startPhotoLongPress(photo.id)"
+                    @mouseup="clearPhotoLongPress"
+                    @mouseleave="clearPhotoLongPress"
+                    @contextmenu.prevent="enterPhotoSelectMode(photo.id)"
+                  >
+                    <img :src="getThumbUrl(getPhotoSource(photo))" :alt="`照片 ${index + 1}`" loading="lazy" />
+                    <span v-if="photoSelectMode" class="photo-select-dot" :class="{ checked: selectedPhotoIds.has(photo.id) }">
+                      <Check v-if="selectedPhotoIds.has(photo.id)" :size="14" />
+                    </span>
+                    <div class="photo-edit-overlay">
+                      <EditOutlined :size="20" />
+                    </div>
+                  </button>
+                </div>
+                <a-empty v-else description="暂无照片" style="padding: 40px 0" />
+              </a-skeleton>
+
+              <div class="load-more" v-if="hasMorePhotos">
+                <a-button @click="loadMorePhotos" :loading="loadingMore">
+                  加载更多
+                </a-button>
+              </div>
+
+              <div v-if="photoSelectMode" class="photo-select-bar">
+                <span>已选择 {{ selectedPhotoIds.size }} 张</span>
+                <div class="photo-select-actions">
+                  <button type="button" class="confirm" @click="confirmPhotoSelection">确定</button>
+                  <button type="button" @click="clearPhotoSelection">取消</button>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <a-result
+            v-if="notFound"
+            status="404"
+            title="节目未找到"
+            sub-title="该节目不存在或素材尚未就绪，请通过公众号对话获取节目链接"
+          />
+        </a-spin>
+      </div>
+
+      <!-- 个人中心 -->
+      <PersonalCenter
+        v-if="showPersonalCenter"
+        :activity-id="program?.activity_id || 0"
+        :profile="authorizedProfile"
+        @back="showPersonalCenter = false"
+        @open-editor="openEditorFromCenter"
       />
-    </a-spin>
 
-    <Teleport to="body">
-      <Transition name="viewer-fade">
-        <div
-          v-if="previewIndex >= 0 && currentPhoto"
-          class="photo-viewer"
-          @click.self="closePreview"
-          @touchstart.passive="handleTouchStart"
-          @touchend.passive="handleTouchEnd"
-        >
-          <div class="viewer-topbar">
-            <button class="viewer-icon-button" type="button" aria-label="关闭" @click="closePreview">
-              <CloseOutlined />
-            </button>
-            <div class="viewer-counter">{{ previewIndex + 1 }} / {{ photos.length }}</div>
-            <div class="viewer-actions">
-              <button
-                class="viewer-icon-button"
-                type="button"
-                aria-label="打印"
-                :disabled="!currentPhoto || printingPhoto"
-                @click="printCurrentPhoto"
-              >
-                <PrinterOutlined />
-              </button>
-              <button
-                class="viewer-icon-button"
-                type="button"
-                aria-label="下载"
-                :disabled="!currentOriginalUrl"
-                @click="downloadPhoto"
-              >
-                <DownloadOutlined />
-              </button>
-            </div>
-          </div>
+      <!-- 画布编辑器 -->
+      <PhotoEditor
+        v-if="editingPhotos.length"
+        :photo-url="editingPhotos[0]?.url || ''"
+        :photo-id="editingPhotos[0]?.id || 0"
+        :photos="editingPhotos"
+        :program-token="token"
+        :activity-id="program?.activity_id || 0"
+        :wechat-profile="authorizedProfile"
+        :canvas-width="canvasWidth"
+        :canvas-height="canvasHeight"
+        :photo-init-x="photoInitX"
+        :photo-init-y="photoInitY"
+        :photo-init-scale="photoInitScale"
+        :photo-margin="photoMargin"
+        :template-name="templateName"
+        :paper-size="paperSize"
+        :photo-slots="photoSlots"
+        :template-canvas-json="templateCanvasJson"
+        @back="editingPhotos = []"
+      />
+    </template>
+  </WeChatAuthGate>
 
-          <button
-            class="viewer-nav-button viewer-nav-prev"
-            type="button"
-            aria-label="上一张"
-            :disabled="previewIndex <= 0"
-            @click.stop="showPrevPhoto"
-          >
-            <LeftOutlined />
-          </button>
-          <button
-            class="viewer-nav-button viewer-nav-next"
-            type="button"
-            aria-label="下一张"
-            :disabled="previewIndex >= photos.length - 1"
-            @click.stop="showNextPhoto"
-          >
-            <RightOutlined />
-          </button>
-
-          <div class="viewer-stage">
-            <img
-              :key="currentPhoto.id"
-              :src="currentPreviewUrl"
-              class="viewer-image"
-              :alt="`照片 ${previewIndex + 1}`"
-              draggable="false"
-            />
-          </div>
-
-          <div class="viewer-footer">
-            <div class="viewer-meta">
-              <strong>{{ program?.name }}</strong>
-              <span v-if="currentPhoto.shoot_time">{{ formatShootTime(currentPhoto.shoot_time) }}</span>
-            </div>
-            <div class="viewer-thumb-strip">
-              <button
-                v-for="(photo, index) in photos"
-                :key="photo.id"
-                type="button"
-                class="viewer-thumb"
-                :class="{ active: index === previewIndex }"
-                @click="previewIndex = index"
-              >
-                <img :src="getThumbUrl(getPhotoSource(photo))" :alt="`缩略图 ${index + 1}`" loading="lazy" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+  <!-- 加载中但未获取到activity_id -->
+  <div v-if="!program?.activity_id && !notFound" class="loading-initial">
+    <a-spin size="large" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   CameraOutlined,
-  CloseOutlined,
-  DownloadOutlined,
-  LeftOutlined,
-  PrinterOutlined,
-  RightOutlined,
+  EditOutlined,
 } from '@ant-design/icons-vue'
+import { Check, ChevronLeft, Menu } from 'lucide-vue-next'
 import { message } from 'ant-design-vue'
-import { publicApi, type Program, type PhotoItem, type WechatProfile } from '@/api/admin'
+import { publicApi, publicApi2, type Program, type PhotoItem, type WechatProfile } from '@/api/admin'
 import { getPhotoUrl, getPreviewUrl, getThumbUrl } from '@/utils/image'
-import { ensureWechatProfile } from '@/utils/wechat'
+import WeChatAuthGate from './WeChatAuthGate.vue'
+import PersonalCenter from './PersonalCenter.vue'
 
-type PublicPhotoItem = PhotoItem & {
-  wotu_url?: string | null
-}
+const PhotoEditor = defineAsyncComponent(() => import('./PhotoEditor.vue'))
+
+type PublicPhotoItem = PhotoItem & { wotu_url?: string | null }
+type EditorPhotoItem = { id: number; url: string }
+type PrintPhotoSlot = { id: string; x: number; y: number; width: number; height: number }
 
 const route = useRoute()
+const router = useRouter()
 const token = computed(() => String(route.params.token))
+
 const program = ref<Program | null>(null)
 const photos = ref<PublicPhotoItem[]>([])
 const loading = ref(false)
@@ -176,100 +172,146 @@ const notFound = ref(false)
 const currentPage = ref(1)
 const pageSize = 30
 const totalPhotos = ref(0)
-const previewIndex = ref(-1)
-const touchStartX = ref(0)
-const printingPhoto = ref(false)
-const wechatProfile = ref<WechatProfile | null>(null)
+
+// 个人中心
+const showPersonalCenter = ref(false)
+const authorizedProfile = ref<WechatProfile | null>(null)
+
+// 画布编辑器
+const editingPhotos = ref<EditorPhotoItem[]>([])
+
+// 编辑提示
+const showEditTip = ref(true)
+const photoSelectMode = ref(false)
+const selectedPhotoIds = ref<Set<number>>(new Set())
+let photoLongPressTimer: number | null = null
+let photoLongPressTriggered = false
+
+// 画布尺寸和照片初始配置（从打印模板获取）
+const canvasWidth = ref(800)
+const canvasHeight = ref(600)
+const photoInitX = ref(50)
+const photoInitY = ref(50)
+const photoInitScale = ref(100)
+const photoMargin = ref(20)
+const templateName = ref('')
+const paperSize = ref<string | null>(null)
+const photoSlots = ref<PrintPhotoSlot[]>([])
+const templateCanvasJson = ref<any>(null)
 
 const hasMorePhotos = computed(() => photos.value.length < totalPhotos.value)
-const currentPhoto = computed(() => photos.value[previewIndex.value] || null)
-const currentOriginalUrl = computed(() => getPhotoSource(currentPhoto.value))
-const currentPreviewUrl = computed(() => getPreviewUrl(currentOriginalUrl.value))
+
+const currentPath = computed(() => window.location.pathname + window.location.search)
 
 function getPhotoSource(photo: PublicPhotoItem | null): string {
   if (!photo) return ''
   return getPhotoUrl(photo.storage_url, photo.wotu_url)
 }
 
-function openPreview(index: number) {
-  previewIndex.value = index
-}
-
-function closePreview() {
-  previewIndex.value = -1
-}
-
-function showPrevPhoto() {
-  if (previewIndex.value > 0) {
-    previewIndex.value--
+function toEditorPhoto(photo: PublicPhotoItem): EditorPhotoItem {
+  return {
+    id: photo.id,
+    url: getPhotoSource(photo),
   }
 }
 
-function showNextPhoto() {
-  if (previewIndex.value < photos.value.length - 1) {
-    previewIndex.value++
+function openEditor(index: number) {
+  const photo = photos.value[index]
+  if (!photo) return
+  editingPhotos.value = [toEditorPhoto(photo)]
+}
+
+function startPhotoLongPress(photoId: number) {
+  clearPhotoLongPress()
+  photoLongPressTriggered = false
+  photoLongPressTimer = window.setTimeout(() => {
+    photoLongPressTriggered = true
+    enterPhotoSelectMode(photoId)
+  }, 520)
+}
+
+function clearPhotoLongPress() {
+  if (photoLongPressTimer) {
+    window.clearTimeout(photoLongPressTimer)
+    photoLongPressTimer = null
   }
 }
 
-function downloadPhoto() {
-  if (!currentOriginalUrl.value) return
-  const link = document.createElement('a')
-  link.href = currentOriginalUrl.value
-  link.download = `${program.value?.name || 'photo'}-${previewIndex.value + 1}.jpg`
-  link.target = '_blank'
-  link.rel = 'noopener'
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
+function enterPhotoSelectMode(photoId: number) {
+  photoSelectMode.value = true
+  selectedPhotoIds.value = new Set([photoId])
 }
 
-async function printCurrentPhoto() {
-  if (!currentPhoto.value || printingPhoto.value) return
-  printingPhoto.value = true
-  try {
-    await publicApi.printPhoto(token.value, currentPhoto.value.id, 1, wechatProfile.value)
-    message.success('已提交打印任务')
-  } catch {
-    message.error('提交打印失败')
-  } finally {
-    printingPhoto.value = false
-  }
-}
-
-function handleTouchStart(event: TouchEvent) {
-  touchStartX.value = event.changedTouches[0]?.clientX || 0
-}
-
-function handleTouchEnd(event: TouchEvent) {
-  const endX = event.changedTouches[0]?.clientX || 0
-  const distance = endX - touchStartX.value
-  if (Math.abs(distance) < 48) return
-  if (distance > 0) {
-    showPrevPhoto()
+function togglePhotoSelection(photoId: number) {
+  const next = new Set(selectedPhotoIds.value)
+  if (next.has(photoId)) {
+    next.delete(photoId)
   } else {
-    showNextPhoto()
+    next.add(photoId)
+  }
+  selectedPhotoIds.value = next
+  if (next.size === 0) {
+    photoSelectMode.value = false
   }
 }
 
-function handleKeydown(event: KeyboardEvent) {
-  if (previewIndex.value < 0) return
-  if (event.key === 'Escape') closePreview()
-  if (event.key === 'ArrowLeft') showPrevPhoto()
-  if (event.key === 'ArrowRight') showNextPhoto()
+function clearPhotoSelection() {
+  selectedPhotoIds.value = new Set()
+  photoSelectMode.value = false
 }
 
-function formatShootTime(value: string): string {
-  const date = new Date(value.replace(' ', 'T'))
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+function confirmPhotoSelection() {
+  const selected = photos.value.filter(photo => selectedPhotoIds.value.has(photo.id)).map(toEditorPhoto)
+  if (!selected.length) {
+    message.info('请选择照片')
+    return
+  }
+  editingPhotos.value = selected
+  clearPhotoSelection()
 }
 
-const fetchProgram = async () => {
+function handlePhotoTap(photo: PublicPhotoItem, index: number) {
+  if (photoLongPressTriggered) {
+    photoLongPressTriggered = false
+    return
+  }
+  if (photoSelectMode.value) {
+    togglePhotoSelection(photo.id)
+    return
+  }
+  openEditor(index)
+}
+
+async function openEditorFromCenter() {
+  showPersonalCenter.value = false
+
+  if (photos.value.length === 0) {
+    currentPage.value = 1
+    await fetchPhotos(1)
+  }
+
+  const firstPhoto = photos.value[0]
+  if (!firstPhoto) {
+    message.info('暂无可编辑照片')
+    return
+  }
+
+  editingPhotos.value = [toEditorPhoto(firstPhoto)]
+}
+
+function goBack() {
+  if (window.history.length > 1) {
+    router.back()
+  } else {
+    router.push('/')
+  }
+}
+
+function onWechatAuthorized(profile: WechatProfile) {
+  authorizedProfile.value = profile
+}
+
+async function fetchProgram() {
   loading.value = true
   notFound.value = false
   try {
@@ -286,7 +328,7 @@ const fetchProgram = async () => {
   }
 }
 
-const fetchPhotos = async (page: number, append = false) => {
+async function fetchPhotos(page: number, append = false) {
   photosLoading.value = !append
   loadingMore.value = append
   try {
@@ -310,47 +352,83 @@ const fetchPhotos = async (page: number, append = false) => {
   }
 }
 
-const loadMorePhotos = () => {
+function loadMorePhotos() {
   currentPage.value++
   fetchPhotos(currentPage.value, true)
 }
 
-watch(previewIndex, index => {
-  document.body.style.overflow = index >= 0 ? 'hidden' : ''
-})
-
 onMounted(async () => {
-  window.addEventListener('keydown', handleKeydown)
   await fetchProgram()
   if (program.value) {
-    wechatProfile.value = await ensureWechatProfile(program.value.activity_id)
     fetchPhotos(1)
+    await loadPrintTemplate()
   }
 })
 
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown)
-  document.body.style.overflow = ''
-})
+// 从活动打印模板加载画布配置
+async function loadPrintTemplate() {
+  if (!program.value?.activity_id) return
+  try {
+    const res = await publicApi2.getCanvasConfig(program.value.activity_id) as any
+    const config = res?.data || res
+    if (config.canvasWidth) canvasWidth.value = config.canvasWidth
+    if (config.canvasHeight) canvasHeight.value = config.canvasHeight
+    if (config.photoInitX !== undefined) photoInitX.value = config.photoInitX
+    if (config.photoInitY !== undefined) photoInitY.value = config.photoInitY
+    if (config.photoInitScale !== undefined) photoInitScale.value = config.photoInitScale
+    if (config.photoMargin !== undefined) photoMargin.value = config.photoMargin
+    templateName.value = config.templateName || ''
+    paperSize.value = config.paperSize || null
+    photoSlots.value = Array.isArray(config.photoSlots) ? config.photoSlots : []
+    templateCanvasJson.value = config.canvasJson || null
+  } catch {
+    // 使用默认值
+  }
+}
 </script>
 
 <style scoped>
+.public-page {
+  min-height: 100vh;
+  background: #f8f8f8;
+}
+
 .detail-nav {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   padding: 12px 16px;
+  background: #fff;
   border-bottom: 1px solid #f0f0f0;
   position: sticky;
   top: 0;
-  background: #fff;
   z-index: 10;
+}
+
+.nav-back, .nav-user {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  color: #333;
+  display: flex;
+}
+
+.nav-back:hover, .nav-user:hover {
+  background: #f5f5f5;
 }
 
 .nav-title {
   font-size: 16px;
   font-weight: 600;
   color: #1a1a2e;
+  text-align: center;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 12px;
 }
 
 .video-section {
@@ -391,6 +469,24 @@ onUnmounted(() => {
   color: #8c8c8c;
 }
 
+.edit-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: #fff3e0;
+  color: #fa8c16;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.edit-hint:hover {
+  background: #ffe0b2;
+}
+
 .photo-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -398,6 +494,7 @@ onUnmounted(() => {
 }
 
 .photo-item {
+  position: relative;
   appearance: none;
   border: 0;
   border-radius: 0;
@@ -406,6 +503,42 @@ onUnmounted(() => {
   overflow: hidden;
   cursor: pointer;
   aspect-ratio: 1;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.photo-item.selecting img {
+  transform: scale(1.02);
+}
+
+.photo-item.selected::after {
+  position: absolute;
+  inset: 0;
+  border: 2px solid #1677ff;
+  content: '';
+  pointer-events: none;
+}
+
+.photo-select-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  border-radius: 50%;
+  background: rgba(17, 24, 39, 0.35);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+}
+
+.photo-select-dot.checked {
+  background: #1677ff;
+  border-color: #fff;
 }
 
 .photo-item img {
@@ -413,233 +546,80 @@ onUnmounted(() => {
   height: 100%;
   object-fit: cover;
   display: block;
-  transition: transform 0.24s ease, opacity 0.2s ease;
+  transition: transform 0.24s ease;
 }
 
 .photo-item:hover img {
-  opacity: 0.9;
-  transform: scale(1.025);
+  transform: scale(1.05);
+}
+
+.photo-edit-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+  backdrop-filter: blur(2px);
+}
+
+.photo-item:hover .photo-edit-overlay {
+  opacity: 1;
+}
+
+.photo-item.selecting .photo-edit-overlay {
+  opacity: 0;
+}
+
+.photo-select-bar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index: 30;
+  height: 48px;
+  padding: 0 14px;
+  border-radius: 24px;
+  background: rgba(17, 24, 39, 0.92);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+}
+
+.photo-select-bar button {
+  border: 0;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  padding: 6px 14px;
+}
+
+.photo-select-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.photo-select-actions .confirm {
+  min-width: 64px;
+  background: #1677ff;
+  font-weight: 700;
 }
 
 .load-more {
   text-align: center;
   padding: 20px 0;
 }
-</style>
 
-<style>
-.photo-viewer {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  background:
-    radial-gradient(circle at 50% 24%, rgba(80, 88, 105, 0.24), transparent 34%),
-    #050505;
-  color: #fff;
-  overflow: hidden;
-  touch-action: pan-y;
-}
-
-.viewer-topbar,
-.viewer-footer {
-  position: relative;
-  z-index: 3;
-}
-
-.viewer-topbar {
-  display: grid;
-  grid-template-columns: 52px 1fr auto;
-  align-items: center;
-  padding: max(12px, env(safe-area-inset-top)) 12px 10px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
-}
-
-.viewer-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.viewer-counter {
-  justify-self: center;
-  min-width: 70px;
-  border-radius: 999px;
-  padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 13px;
-  line-height: 1;
-  text-align: center;
-  backdrop-filter: blur(14px);
-}
-
-.viewer-icon-button,
-.viewer-nav-button {
-  appearance: none;
-  border: 0;
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.viewer-icon-button {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
-  font-size: 19px;
-  backdrop-filter: blur(14px);
-}
-
-.viewer-icon-button:disabled,
-.viewer-nav-button:disabled {
-  cursor: default;
-  opacity: 0.28;
-}
-
-.viewer-stage {
-  position: relative;
-  min-height: 0;
+.loading-initial {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 18px;
-}
-
-.viewer-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  border-radius: 2px;
-  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.55);
-  user-select: none;
-}
-
-.viewer-nav-button {
-  position: absolute;
-  z-index: 4;
-  top: 50%;
-  width: 48px;
-  height: 74px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.11);
-  font-size: 24px;
-  transform: translateY(-50%);
-  backdrop-filter: blur(14px);
-}
-
-.viewer-nav-prev {
-  left: 14px;
-}
-
-.viewer-nav-next {
-  right: 14px;
-}
-
-.viewer-footer {
-  padding: 8px 14px max(14px, env(safe-area-inset-bottom));
-  background: linear-gradient(0deg, rgba(0, 0, 0, 0.86), rgba(0, 0, 0, 0));
-}
-
-.viewer-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 13px;
-}
-
-.viewer-meta strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.viewer-meta span {
-  flex: none;
-  color: rgba(255, 255, 255, 0.62);
-}
-
-.viewer-thumb-strip {
-  display: flex;
-  gap: 7px;
-  overflow-x: auto;
-  padding: 2px 0;
-  scrollbar-width: none;
-}
-
-.viewer-thumb-strip::-webkit-scrollbar {
-  display: none;
-}
-
-.viewer-thumb {
-  flex: 0 0 48px;
-  width: 48px;
-  height: 48px;
-  border: 2px solid transparent;
-  border-radius: 4px;
-  padding: 0;
-  background: rgba(255, 255, 255, 0.1);
-  overflow: hidden;
-  opacity: 0.58;
-  cursor: pointer;
-}
-
-.viewer-thumb.active {
-  border-color: #fff;
-  opacity: 1;
-}
-
-.viewer-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.viewer-fade-enter-active,
-.viewer-fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.viewer-fade-enter-from,
-.viewer-fade-leave-to {
-  opacity: 0;
-}
-
-@media (max-width: 640px) {
-  .viewer-stage {
-    padding: 0;
-  }
-
-  .viewer-image {
-    width: 100%;
-    max-height: 100%;
-    border-radius: 0;
-    box-shadow: none;
-  }
-
-  .viewer-nav-button {
-    display: none;
-  }
-
-  .viewer-footer {
-    padding-left: 10px;
-    padding-right: 10px;
-  }
-
-  .viewer-thumb {
-    flex-basis: 42px;
-    width: 42px;
-    height: 42px;
-  }
+  height: 100vh;
 }
 </style>

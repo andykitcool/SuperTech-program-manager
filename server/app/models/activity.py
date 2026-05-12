@@ -69,6 +69,9 @@ class Activity(Base):
     wotu_album_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     storage_path_prefix: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     cover_image: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    ready_mode: Mapped[ReadyMode] = mapped_column(
+        SAEnum(ReadyMode), default=ReadyMode.AUTO
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
