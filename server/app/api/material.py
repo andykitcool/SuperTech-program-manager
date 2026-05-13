@@ -217,30 +217,9 @@ async def upload_material_file(
 ):
     require_permission(current_user, "material.manage")
     """上传素材文件，返回存储URL"""
-    import os
-    import shutil
-    import uuid
+    from app.utils.cloud_assets import upload_image_to_cloud
 
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image files are allowed")
-
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"}:
-        if file.content_type == "image/svg+xml":
-            ext = ".svg"
-        else:
-            ext = ".jpg"
-
-    upload_dir = os.path.join("uploads", "decoration-materials")
-    os.makedirs(upload_dir, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    path = os.path.join(upload_dir, filename)
-
-    with open(path, "wb") as out:
-        shutil.copyfileobj(file.file, out)
-
-    url = f"/uploads/decoration-materials/{filename}"
-    return {"url": url, "filename": filename, "storage_url": url}
+    return await upload_image_to_cloud(file, prefix="decoration-materials")
 
 
 # ============================================================

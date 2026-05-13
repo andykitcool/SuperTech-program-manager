@@ -114,29 +114,13 @@ async def upload_activity_cover(
     file: UploadFile = File(...),
     _user: dict = Depends(get_current_user),
 ):
-    import os
-    import shutil
-    import uuid
+    from app.utils.cloud_assets import upload_image_to_cloud
 
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image files are allowed")
-
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
-        ext = ".jpg"
-
-    upload_dir = os.path.join("uploads", "activity-covers")
-    os.makedirs(upload_dir, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    path = os.path.join(upload_dir, filename)
-
-    with open(path, "wb") as out:
-        shutil.copyfileobj(file.file, out)
-
-    return {
-        "url": f"/uploads/activity-covers/{filename}",
-        "filename": filename,
-    }
+    return await upload_image_to_cloud(
+        file,
+        prefix="activity-covers",
+        allowed_extensions={".jpg", ".jpeg", ".png", ".webp"},
+    )
 
 
 @router.get("/activities/{activity_id}", response_model=ActivityOut)
