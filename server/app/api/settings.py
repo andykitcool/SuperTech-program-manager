@@ -302,14 +302,28 @@ def update_network_settings(
     current_user: dict = Depends(get_current_user),
 ):
     require_permission(current_user, "system.manage")
-    from app.utils.network_settings import save_network_settings, save_ssl_files, write_nginx_ssl_config
+    import logging
+    from app.utils.network_settings import save_network_settings, save_ssl_files, write_nginx_ssl_config, reload_nginx
 
+    logger = logging.getLogger(__name__)
     payload = data.model_dump(exclude_unset=True)
-    if payload.get("ssl_cert_pem") or payload.get("ssl_key_pem"):
-        save_ssl_files(payload.pop("ssl_cert_pem", None), payload.pop("ssl_key_pem", None))
-    settings = save_network_settings(db, payload)
-    write_nginx_ssl_config(settings)
-    return settings
+
+    try:
+        if payload.get("ssl_cert_pem") or payload.get("ssl_key_pem"):
+            save_ssl_files(payload.pop("ssl_cert_pem", None), payload.pop("ssl_key_pem", None))
+        settings = save_network_settings(db, payload)
+        write_nginx_ssl_config(settings)
+        reload_nginx()
+        return settings
+    except PermissionError as e:
+        logger.error(f"Permission denied writing SSL/nginx files: {e}")
+        raise HTTPException(status_code=500, detail=f"文件写入权限不足: {e}")
+    except OSError as e:
+        logger.error(f"IO error writing SSL/nginx files: {e}")
+        raise HTTPException(status_code=500, detail=f"文件写入失败: {e}")
+    except Exception as e:
+        logger.error(f"Failed to save network settings: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"保存网络设置失败: {e}")
 
 
 @router.get("/lankuo/printers")

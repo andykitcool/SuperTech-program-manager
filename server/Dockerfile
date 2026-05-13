@@ -10,6 +10,8 @@ RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 instal
     libasound2 libatspi2.0-0 libx11-xcb1 \
     fontconfig fonts-noto-cjk \
     ffmpeg \
+    curl \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz" | tar xz --strip-components=1 -C /usr/local/bin docker/docker \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 

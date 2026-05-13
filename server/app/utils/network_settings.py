@@ -1,10 +1,14 @@
 import json
+import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from app.models import SystemSettings
+
+logger = logging.getLogger(__name__)
 
 
 NETWORK_SETTINGS_KEY = "network_settings"
@@ -164,3 +168,23 @@ server {{
 }}
 """.lstrip()
     NGINX_SSL_CONF_PATH.write_text(conf, encoding="utf-8")
+
+
+def reload_nginx() -> None:
+    """Reload nginx in the web container after config changes."""
+    import os
+    web_container = os.environ.get("WEB_CONTAINER_NAME", "supertech-program-manager_new-web-1")
+    try:
+        result = subprocess.run(
+            ["docker", "exec", web_container, "nginx", "-s", "reload"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            logger.info("Nginx reloaded successfully")
+        else:
+            logger.warning(f"Nginx reload returned code {result.returncode}: {result.stderr}")
+    except FileNotFoundError:
+        # docker CLI not available (not mounting docker socket)
+        logger.info("Docker CLI not available, skipping nginx reload")
+    except Exception as e:
+        logger.warning(f"Failed to reload nginx: {e}")

@@ -41,6 +41,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       DEFAULT_STORAGE_PROVIDER: aliyun
       TZ: Asia/Shanghai
+      WEB_CONTAINER_NAME: ${WEB_CONTAINER_NAME:-supertech-program-manager_new-web-1}
     depends_on:
       db:
         condition: service_healthy
@@ -50,6 +51,7 @@ services:
       - ssl_data:/app/uploads/network/ssl
       - nginx_conf:/app/uploads/network/nginx
       - upload_temp:/tmp/uploads
+      - /var/run/docker.sock:/var/run/docker.sock
 
   web:
     build:
