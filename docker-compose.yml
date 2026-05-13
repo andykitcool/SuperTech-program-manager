@@ -47,6 +47,8 @@ services:
     volumes:
       - ./server/app:/app/app
       - ./server/uploads:/app/uploads
+      - ssl_data:/app/uploads/network/ssl
+      - nginx_conf:/app/uploads/network/nginx
       - upload_temp:/tmp/uploads
 
   web:
@@ -59,9 +61,11 @@ services:
     depends_on:
       - api
     volumes:
-      - ./server/uploads/network/nginx:/etc/nginx/network
-      - ./server/uploads/network/ssl:/etc/nginx/ssl:ro
+      - nginx_conf:/etc/nginx/network
+      - ssl_data:/etc/nginx/ssl:ro
 
 volumes:
   mysql_data:
   upload_temp:
+  ssl_data:
+  nginx_conf:
