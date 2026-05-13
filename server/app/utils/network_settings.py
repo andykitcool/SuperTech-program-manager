@@ -1,6 +1,5 @@
 import json
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -171,20 +170,35 @@ server {{
 
 
 def reload_nginx() -> None:
-    """Reload nginx in the web container after config changes."""
+    """Reload nginx in the web container via Docker Engine API (unix socket)."""
     import os
+    import socket
+    import http.client
+
     web_container = os.environ.get("WEB_CONTAINER_NAME", "supertech-program-manager_new-web-1")
+    docker_socket_path = "/var/run/docker.sock"
+
+    if not Path(docker_socket_path).exists():
+        logger.info("Docker socket not mounted, skipping nginx reload")
+        return
+
     try:
-        result = subprocess.run(
-            ["docker", "exec", web_container, "nginx", "-s", "reload"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            logger.info("Nginx reloaded successfully")
+        # Use raw HTTP over unix socket — no docker CLI needed
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(docker_socket_path)
+        sock.settimeout(10)
+
+        # Send SIGHUP to the web container (signals nginx to reload config)
+        conn = http.client.HTTPConnection("localhost")
+        conn.sock = sock
+        conn.request("POST", f"/containers/{web_container}/kill?signal=SIGHUP")
+        resp = conn.getresponse()
+        resp.read()  # consume response body
+        conn.close()
+
+        if resp.status in (200, 204):
+            logger.info("Nginx reload signal sent successfully via Docker API")
         else:
-            logger.warning(f"Nginx reload returned code {result.returncode}: {result.stderr}")
-    except FileNotFoundError:
-        # docker CLI not available (not mounting docker socket)
-        logger.info("Docker CLI not available, skipping nginx reload")
+            logger.warning(f"Nginx reload signal failed: HTTP {resp.status}")
     except Exception as e:
-        logger.warning(f"Failed to reload nginx: {e}")
+        logger.warning(f"Failed to reload nginx via Docker API: {e}")
