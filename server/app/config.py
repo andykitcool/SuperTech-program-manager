@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     PHOTO_SYNC_INTERVAL_MINUTES: int = 3
     PHOTO_SYNC_TIME_TOLERANCE_MINUTES: int = 5
 
+    # Wotu API Sync (wotu-getphoto-by-deepseek service)
+    WOTU_SERVICE_URL: str = ""
+    WOTU_API_KEY: str = ""
+    PUBLIC_API_BASE_URL: str = ""
+
     # Server
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = 8000

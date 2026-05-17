@@ -38,6 +38,7 @@ def _init_database() -> None:
     _ensure_activity_time_columns()
     _ensure_video_recorded_at_column()
     _ensure_activity_ready_mode_column()
+    _ensure_activity_sync_mode_column()
 
     # Ensure short video columns on programs table
     _ensure_short_video_columns()
@@ -46,6 +47,7 @@ def _init_database() -> None:
     _ensure_print_payment_columns()
     _ensure_print_image_columns()
     _ensure_print_client_columns()
+    _ensure_photo_category_columns()
     _ensure_app_user_auth_columns()
 
     _seed_roles_and_users()
@@ -135,6 +137,20 @@ def _ensure_activity_ready_mode_column():
         db.close()
 
 
+def _ensure_activity_sync_mode_column():
+    """Add sync_mode column to activities table for local/api sync mode control."""
+    from sqlalchemy import text
+
+    db = SessionLocal()
+    try:
+        result = db.execute(text("SHOW COLUMNS FROM activities LIKE 'sync_mode'"))
+        if not result.fetchone():
+            db.execute(text("ALTER TABLE activities ADD COLUMN sync_mode VARCHAR(10) NOT NULL DEFAULT 'local'"))
+            db.commit()
+    finally:
+        db.close()
+
+
 def _ensure_short_video_columns():
     """Add short_video_url and short_video_status columns to programs table."""
     from sqlalchemy import text
@@ -202,6 +218,24 @@ def _ensure_print_client_columns():
             result = db.execute(text(f"SHOW COLUMNS FROM print_records LIKE '{col}'"))
             if not result.fetchone():
                 db.execute(text(f"ALTER TABLE print_records ADD COLUMN {col} {col_type}"))
+                db.commit()
+    finally:
+        db.close()
+
+
+def _ensure_photo_category_columns():
+    """Add Wotu category fields to photos for categorized album display."""
+    from sqlalchemy import text
+
+    db = SessionLocal()
+    try:
+        for col, col_type in [
+            ("wotu_category_id", "VARCHAR(200) NULL"),
+            ("wotu_category_name", "VARCHAR(200) NULL"),
+        ]:
+            result = db.execute(text(f"SHOW COLUMNS FROM photos LIKE '{col}'"))
+            if not result.fetchone():
+                db.execute(text(f"ALTER TABLE photos ADD COLUMN {col} {col_type}"))
                 db.commit()
     finally:
         db.close()

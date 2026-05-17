@@ -42,6 +42,8 @@ class WotuPhotoInfo:
     error_msg: str = ""
     index: int = 0
     tab: str = ""               # 所属选项卡
+    category_id: str = ""
+    category_name: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -77,7 +79,9 @@ class WotuSyncTask:
     url: str = ""
     concurrency: int = 5
     scroll_delay: int = 5
+    no_new_stop_rounds: int = 3
     tab_mode: str = "current"       # "current" | "all"
     tab_subdir: bool = True
+    selected_categories: list[dict] = field(default_factory=list)
     max_retries: int = 3
     timeout: int = 60

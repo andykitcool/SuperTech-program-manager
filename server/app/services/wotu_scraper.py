@@ -1,44 +1,477 @@
-"""喔图 Playwright 浏览器自动化模块 - 分批拦截 API + 滚动加载"""
+"""Pure HTTP Wotu/Alltuu album scraper.
+
+Runtime photo sync uses the mobile site's signed API flow:
+
+1. open album HTML
+2. fetch authority secret
+3. fetch album metadata/categories
+4. page through signed v4c/fplN with the last photo `pc` cursor
+"""
+
+from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import re
+import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Optional
-from playwright.async_api import async_playwright, Page, Browser, BrowserContext
+from typing import Any, Callable, Optional
+from urllib.parse import parse_qs, urljoin, urlparse
+
+import aiohttp
 
 from app.services.wotu_models import WotuPhotoInfo
 from app.services.wotu_utils import extract_ext_from_url, sanitize_filename
 
 logger = logging.getLogger(__name__)
 
-ALLTUU_API_RE = re.compile(r'v4c\.alltuu\.com.*?/rest/v4c/fpl[^/]*/', re.IGNORECASE)
+ALLTUU_API_RE = re.compile(r"https?://[^\"'<>\\]+/rest/v4c/fpl/[^\"'<>\\]+", re.I)
+ALBUM_URL_RE = re.compile(r"/album/([A-Za-z0-9_-]+)(?:/([A-Za-z0-9_-]+))?")
+IMAGE_EXT_RE = re.compile(r"\.(?:jpg|jpeg|png|webp)(?:[?#]|$)", re.I)
+ALLTUU_CDN_SIGN_KEY = "50f403a08b58841d319b92f0c10dbbd2"
+ALLTUU_SIGN_FROM = "100002"
+ALLTUU_SIGN_VERSION = "0"
+ALLTUU_SIGN_TOKEN = "null"
+
+
+class WotuApiError(RuntimeError):
+    pass
+
+
+@dataclass
+class AlbumRef:
+    album_id: str
+    category_id: str = ""
 
 
 class WotuScraper:
-    """喔图相册分批抓取器"""
+    """Fetch Wotu album photo data through HTTP APIs only."""
 
-    def __init__(self, headless: bool = True, scroll_delay: int = 5):
+    def __init__(self, headless: bool = True, scroll_delay: int = 0, page_size: int = 60, request_timeout: int = 30):
         self.headless = headless
         self.scroll_delay = scroll_delay
-        self._playwright = None
-        self._browser: Optional[Browser] = None
-        self._context: Optional[BrowserContext] = None
-        self._page: Optional[Page] = None
+        self.page_size = page_size
+        self.request_timeout = aiohttp.ClientTimeout(total=request_timeout)
+        self.album_url = ""
+        self.album_ref = AlbumRef("")
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._html = ""
+        self._candidate_api_urls: list[str] = []
+        self._secret = ""
+        self._album_meta: dict[str, Any] = {}
+        self._album_sort = "4"
+        self._page_cursor = ""
+        self._tabs: list[dict[str, Any]] = []
+        self._current_tab: Optional[dict[str, Any]] = None
         self._all_photos: dict[str, WotuPhotoInfo] = {}
         self._photo_order: list[str] = []
         self._new_photos: list[WotuPhotoInfo] = []
-        self._on_log: Optional[Callable] = None
-        self._on_photo_found: Optional[Callable] = None
-        self._on_progress: Optional[Callable] = None
+        self._on_log: Optional[Callable[[str, str], None]] = None
+        self._on_photo_found: Optional[Callable[[WotuPhotoInfo], None]] = None
+        self._on_progress: Optional[Callable[[dict], None]] = None
         self._stopped = False
-        self._api_count = 0
         self._batch_count = 0
 
     def set_callbacks(self, on_progress=None, on_log=None, on_photo_found=None):
         self._on_progress = on_progress
         self._on_log = on_log
         self._on_photo_found = on_photo_found
+
+    def request_stop(self):
+        self._stopped = True
+
+    async def open_page(self, album_url: str):
+        await self.open_album(album_url)
+        await self.fetch_next_page()
+
+    async def open_album(self, album_url: str):
+        self.album_url = album_url.strip()
+        self.album_ref = self.parse_album_url(self.album_url)
+        self._session = aiohttp.ClientSession(headers=self._default_headers(), timeout=self.request_timeout)
+        self._emit_log(f"打开喔图相册 API：{self.album_ref.album_id}")
+        self._html = await self._fetch_text(self.album_url)
+        self._candidate_api_urls = self._discover_api_urls(self._html)
+        self._secret = await self._fetch_authority_secret()
+        self._album_meta = await self._fetch_album_meta()
+        self._album_sort = self._extract_album_sort(self._album_meta)
+        self._tabs = self._extract_tabs_from_meta(self._album_meta)
+        self._current_tab = self._default_tab()
+
+    async def detect_tabs(self) -> list[dict]:
+        if self._tabs:
+            self._emit_log("检测到分类：" + "、".join(t["name"] for t in self._tabs))
+            return self._tabs
+        self._emit_log("未检测到分类信息，按当前分类处理", "warning")
+        return []
+
+    async def switch_tab(self, tab_info: dict) -> bool:
+        self.reset_state()
+        self._current_tab = dict(tab_info)
+        self._emit_log(f"切换 API 分类：{tab_info.get('name') or tab_info.get('category_id') or '默认分类'}")
+        return True
+
+    async def fetch_next_page(self) -> bool:
+        if self._stopped:
+            return False
+        if self.scroll_delay > 0:
+            await asyncio.sleep(min(self.scroll_delay, 3))
+        category_id = str((self._current_tab or {}).get("category_id") or "")
+        page = self._batch_count + 1
+        body = await self._request_photo_page(category_id, page)
+        photo_list = self._find_photo_list_recursive(body)
+        if not photo_list:
+            return False
+        self._page_cursor = self._next_cursor_from_photos(photo_list)
+        added = self._add_photos(photo_list)
+        self._batch_count += 1
+        self._emit_progress({"type": "scraping_progress", "found": len(self._all_photos), "batch": self._batch_count})
+        return added > 0
+
+    async def fetch_until_empty(self, max_pages: int = 500, no_new_pages: int = 1) -> bool:
+        empty_pages = 0
+        for _ in range(max_pages):
+            if self._stopped:
+                return False
+            has_new = await self.fetch_next_page()
+            if has_new:
+                empty_pages = 0
+            else:
+                empty_pages += 1
+                if empty_pages >= no_new_pages:
+                    return True
+        return True
+
+    async def scroll_and_wait(self, timeout: int = 15) -> bool:
+        return await self.fetch_next_page()
+
+    def get_new_photos(self) -> list[WotuPhotoInfo]:
+        batch = self._new_photos[:]
+        self._new_photos.clear()
+        return batch
+
+    @property
+    def total_found(self) -> int:
+        return len(self._all_photos)
+
+    @property
+    def tabs(self) -> list[dict]:
+        return self._tabs
+
+    async def close(self):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    def reset_state(self):
+        self._all_photos.clear()
+        self._photo_order.clear()
+        self._new_photos.clear()
+        self._batch_count = 0
+        self._page_cursor = ""
+
+    @staticmethod
+    def parse_album_url(album_url: str) -> AlbumRef:
+        parsed = urlparse(album_url)
+        match = ALBUM_URL_RE.search(parsed.path)
+        if not match:
+            raise ValueError("相册地址无效，应为 /album/{album_id}/...")
+        category_id = match.group(2) or ""
+        qs = parse_qs(parsed.query)
+        for key in ("category_id", "categoryId", "classify_id", "classifyId", "cid"):
+            if qs.get(key):
+                category_id = qs[key][0]
+                break
+        return AlbumRef(album_id=match.group(1), category_id=category_id)
+
+    def _default_headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Connection": "keep-alive",
+            "Referer": self.album_url or "https://m.alltuu.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            ),
+        }
+
+    async def _fetch_text(self, url: str) -> str:
+        if not self._session:
+            raise WotuApiError("HTTP session is not open")
+        async with self._session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.text()
+
+    async def _request_photo_page(self, category_id: str, page: int) -> dict:
+        if not self._session:
+            raise WotuApiError("HTTP session is not open")
+        errors: list[str] = []
+        empty_signed_page = False
+        for url, params in self._build_photo_requests(category_id, page):
+            if self._stopped:
+                return {}
+            try:
+                async with self._session.get(url, params=params) as resp:
+                    if resp.status >= 400:
+                        errors.append(f"{resp.status} {resp.url}")
+                        continue
+                    text = await resp.text()
+                    try:
+                        body = json.loads(text)
+                    except json.JSONDecodeError:
+                        errors.append(f"non-json {resp.url}")
+                        continue
+                    if self._find_photo_list_recursive(body):
+                        self._emit_log(f"API 第 {page} 页加载完成")
+                        return body
+                    if "rest/v4c/fplN" in str(resp.url):
+                        empty_signed_page = True
+                    errors.append(f"empty {resp.url}")
+            except Exception as exc:
+                errors.append(f"{type(exc).__name__}: {exc}")
+        if page == 1 and empty_signed_page:
+            self._emit_log(f"分类 {category_id or '默认'} 暂无照片", "warning")
+            return {}
+        if page == 1:
+            raise WotuApiError("无法加载喔图照片 API：" + "; ".join(errors[:4]))
+        return {}
+
+    def _build_photo_requests(self, category_id: str, page: int) -> list[tuple[str, dict[str, Any]]]:
+        requests: list[tuple[str, dict[str, Any]]] = []
+        if self._secret and category_id and (page == 1 or self._page_cursor):
+            params = {
+                "a": self.album_ref.album_id,
+                "s": category_id,
+                "n": str(self.page_size),
+                "pc": self._page_cursor,
+                "o": self._current_sort(),
+                "t": str(int(time.time() * 1000)),
+                "pd": "",
+                "v": "1",
+                "sk": self._secret,
+            }
+            requests.append((self._sign_cdn_url("https://v4c.alltuu.com/rest/v4c/fplN", params), {}))
+        for url in self._candidate_api_urls:
+            requests.append((url, self._page_params(page)))
+        return requests
+
+    async def _fetch_authority_secret(self) -> str:
+        if not self._session:
+            raise WotuApiError("HTTP session is not open")
+        params = {"albumId": self.album_ref.album_id}
+        url = self._sign_server_url("https://m.alltuu.com/rest-prepub/fc/authority", params)
+        async with self._session.get(url, params=params) as resp:
+            resp.raise_for_status()
+            body = await resp.json(content_type=None)
+        data = body.get("data") or body.get("d") or {}
+        secret = str(data.get("secret") or "")
+        if not secret:
+            raise WotuApiError("喔图 authority 接口未返回 secret")
+        return secret
+
+    async def _fetch_album_meta(self) -> dict[str, Any]:
+        if not self._secret or not self._session:
+            return {}
+        url = self._sign_cdn_url(
+            "https://v4c.alltuu.com/rest/v4c/fa",
+            {"a": self.album_ref.album_id, "t": "0", "sk": self._secret},
+        )
+        async with self._session.get(url) as resp:
+            if resp.status >= 400:
+                return {}
+            body = await resp.json(content_type=None)
+        return body.get("d") or body.get("data") or {}
+
+    def _extract_tabs_from_meta(self, meta: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_tabs = meta.get("seperateDTOList") or meta.get("separateDTOList") or []
+        tabs = []
+        if isinstance(raw_tabs, list):
+            for index, item in enumerate(raw_tabs):
+                if not isinstance(item, dict):
+                    continue
+                category_id = str(item.get("idEnc") or item.get("id") or item.get("sepIdN") or "")
+                if not category_id:
+                    continue
+                tabs.append({
+                    "index": index,
+                    "name": str(item.get("name") or category_id),
+                    "category_id": category_id,
+                    "sort": str(item.get("sortType") or item.get("order") or self._album_sort),
+                    "active": category_id == self.album_ref.category_id or (not self.album_ref.category_id and index == 0),
+                })
+        return tabs
+
+    def _default_tab(self) -> dict[str, Any]:
+        if self._tabs:
+            if self.album_ref.category_id:
+                for tab in self._tabs:
+                    if str(tab.get("category_id") or "") == self.album_ref.category_id:
+                        return {**tab, "active": True}
+            return {**self._tabs[0], "active": True}
+        return {
+            "index": 0,
+            "name": self.album_ref.category_id or "默认分类",
+            "category_id": self.album_ref.category_id,
+            "sort": self._album_sort,
+            "active": True,
+        }
+
+    def _extract_album_sort(self, meta: dict[str, Any]) -> str:
+        album = meta.get("albumDTO") or {}
+        for key in ("sort", "order", "sortType"):
+            value = album.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return "4"
+
+    def _current_sort(self) -> str:
+        if self._current_tab:
+            sort = self._current_tab.get("sort")
+            if sort not in (None, ""):
+                return str(sort)
+        return self._album_sort or "4"
+
+    def _next_cursor_from_photos(self, photo_list: list) -> str:
+        for item in reversed(photo_list):
+            if not isinstance(item, dict):
+                continue
+            for key in ("pc", "photoCode", "cursor", "id"):
+                value = item.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        return ""
+
+    def _sign_server_url(self, base_url: str, params: dict[str, Any]) -> str:
+        timestamp = str(int(time.time() * 1000))
+        sign = {**params, "from": ALLTUU_SIGN_FROM, "timestamp": timestamp, "token": ALLTUU_SIGN_TOKEN, "version": ALLTUU_SIGN_VERSION}
+        sign_str = "".join(f"/{sign[key]}" for key in sorted(sign))
+        digest = hashlib.md5(sign_str.encode("utf-8")).hexdigest()
+        return f"{base_url}/v{ALLTUU_SIGN_FROM}-{timestamp}-{ALLTUU_SIGN_TOKEN}-{ALLTUU_SIGN_VERSION}-{digest}"
+
+    def _sign_cdn_url(self, base_url: str, params: dict[str, Any]) -> str:
+        parsed = urlparse(base_url)
+        path = parsed.path
+        for key in sorted(params):
+            path += f"/{key}{params[key]}"
+        timestamp_hex = format(int(time.time()), "x")
+        digest = hashlib.md5(f"{ALLTUU_CDN_SIGN_KEY}{path}{timestamp_hex}".encode("utf-8")).hexdigest()
+        return f"{parsed.scheme}://{parsed.netloc}/{digest}/{timestamp_hex}{path}"
+
+    def _page_params(self, page: int) -> dict[str, Any]:
+        return {"page": page, "pageNum": page, "pageIndex": page, "pageSize": self.page_size, "limit": self.page_size, "size": self.page_size}
+
+    def _discover_api_urls(self, html: str) -> list[str]:
+        normalized = (html or "").replace("\\/", "/")
+        return list(dict.fromkeys(urljoin(self.album_url, raw.replace("\\/", "/")) for raw in ALLTUU_API_RE.findall(normalized)))
+
+    def _find_photo_list_recursive(self, obj: Any, depth: int = 0) -> list:
+        if depth > 7:
+            return []
+        markers = ("ol", "bl", "sl", "ssl", "url1920", "n", "shoot_time", "time")
+        if isinstance(obj, list):
+            if obj and isinstance(obj[0], dict):
+                keys = set(obj[0].keys())
+                if any(marker in keys for marker in markers):
+                    return obj
+                if any(self._parse_single_photo(item) for item in obj[:3] if isinstance(item, dict)):
+                    return obj
+            for item in obj[:20]:
+                found = self._find_photo_list_recursive(item, depth + 1)
+                if found:
+                    return found
+        elif isinstance(obj, dict):
+            for key in ("data", "photos", "list", "items", "result", "records", "photoList", "photo_list", "rows", "content", "d"):
+                if key in obj:
+                    found = self._find_photo_list_recursive(obj[key], depth + 1)
+                    if found:
+                        return found
+            for val in obj.values():
+                found = self._find_photo_list_recursive(val, depth + 1)
+                if found:
+                    return found
+        return []
+
+    def _add_photos(self, photo_list: list) -> int:
+        added = 0
+        for item in photo_list:
+            if not isinstance(item, dict):
+                continue
+            photo = self._parse_single_photo(item)
+            if not photo or not photo.url:
+                continue
+            if photo.id in self._all_photos:
+                continue
+            photo.index = len(self._all_photos) + 1
+            if self._current_tab:
+                photo.tab = str(self._current_tab.get("name") or "")
+                photo.category_id = str(self._current_tab.get("category_id") or "")
+                photo.category_name = str(self._current_tab.get("name") or "")
+            self._all_photos[photo.id] = photo
+            self._photo_order.append(photo.id)
+            self._new_photos.append(photo)
+            added += 1
+            if self._on_photo_found:
+                self._on_photo_found(photo)
+        if added:
+            self._emit_log(f"本批新增 {added} 张，累计 {len(self._all_photos)} 张")
+        return added
+
+    def _parse_single_photo(self, item: dict) -> Optional[WotuPhotoInfo]:
+        url = ""
+        for key in ("ol", "bl", "url1920"):
+            val = item.get(key, "")
+            if isinstance(val, str) and val.startswith("http"):
+                url = val
+                break
+        if not url:
+            for val in item.values():
+                if isinstance(val, str) and val.startswith("http") and IMAGE_EXT_RE.search(val):
+                    url = val
+                    break
+        if not url:
+            return None
+        photo = WotuPhotoInfo()
+        photo.url = url
+        photo.ext = extract_ext_from_url(url) or ".jpg"
+        photo.id = str(item.get("id") or item.get("pid") or item.get("photo_id") or item.get("pc") or "")
+        for key in ("ssl", "sl", "thumb", "thumb_url"):
+            val = item.get(key, "")
+            if isinstance(val, str) and val.startswith("http"):
+                photo.thumb_url = val
+                break
+        if not photo.thumb_url:
+            photo.thumb_url = url
+        raw_name = item.get("n") or item.get("name") or item.get("filename") or ""
+        if isinstance(raw_name, str) and raw_name:
+            name_no_ext = re.sub(r"\.[^.]+$", "", raw_name)
+            photo.filename = sanitize_filename(f"{name_no_ext}{photo.ext}")
+        else:
+            photo.filename = sanitize_filename(f"{photo.id or hash(url)}{photo.ext}")
+        ts = item.get("time", 0) or item.get("shoot_time", 0)
+        if ts:
+            try:
+                ts_int = int(float(ts))
+                if ts_int > 1e12:
+                    ts_int //= 1000
+                photo.shoot_time = datetime.fromtimestamp(ts_int).strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, OSError, TypeError):
+                photo.shoot_time = str(ts)
+        os_val = item.get("os", "")
+        if os_val:
+            try:
+                photo.size = int(float(os_val))
+            except (ValueError, TypeError):
+                pass
+        w = item.get("w", 0) or item.get("width", 0)
+        h = item.get("h", 0) or item.get("height", 0)
+        if isinstance(w, (int, float)):
+            photo.width = int(w)
+        if isinstance(h, (int, float)):
+            photo.height = int(h)
+        return photo
 
     def _emit_log(self, message: str, level: str = "info"):
         if self._on_log:
@@ -48,432 +481,3 @@ class WotuScraper:
     def _emit_progress(self, data: dict):
         if self._on_progress:
             self._on_progress(data)
-
-    def _emit_photo_found(self, photo: WotuPhotoInfo):
-        if self._on_photo_found:
-            self._on_photo_found(photo)
-
-    def request_stop(self):
-        self._stopped = True
-
-    async def open_page(self, album_url: str):
-        """打开相册页面，等待首批API响应"""
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.headless,
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
-        )
-        self._context = await self._browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-            viewport={"width": 390, "height": 844},
-            is_mobile=True,
-            has_touch=True,
-        )
-        self._page = await self._context.new_page()
-        self._page.on("response", self._handle_response)
-
-        self._emit_log("正在打开相册页面...")
-
-        await self._page.add_init_script("""
-            const origOpen = XMLHttpRequest.prototype.open;
-            const origSend = XMLHttpRequest.prototype.send;
-            window.__xhrIntercepted = 0;
-            XMLHttpRequest.prototype.open = function(method, url) {
-                this.__url = url;
-                return origOpen.apply(this, arguments);
-            };
-            XMLHttpRequest.prototype.send = function() {
-                this.addEventListener('load', function() {
-                    if (this.__url && this.__url.includes('alltuu')) {
-                        window.__xhrIntercepted++;
-                    }
-                });
-                return origSend.apply(this, arguments);
-            };
-            const origObserve = IntersectionObserver.prototype.observe;
-            IntersectionObserver.prototype.observe = function(target) {
-                return origObserve.apply(this, arguments);
-            };
-        """)
-
-        await self._page.goto(album_url, wait_until="domcontentloaded", timeout=30000)
-
-        self._emit_log("等待页面加载和首次API响应...")
-        for i in range(20):
-            if self._api_count > 0 or self._stopped:
-                break
-            await asyncio.sleep(1)
-            if i % 5 == 4 and self._api_count == 0:
-                self._emit_log(f"仍在等待API响应... ({i+1}s)")
-
-        await asyncio.sleep(2)
-
-        if self._api_count == 0:
-            self._emit_log("初始未拦截到API，尝试滚动触发...")
-            for _ in range(10):
-                await self._page.mouse.wheel(0, 300)
-                await asyncio.sleep(0.2)
-            await asyncio.sleep(2)
-
-        self._emit_log(f"页面加载完成，第1批: 拦截 {self._api_count} 个API，发现 {len(self._all_photos)} 张图片")
-
-    def reset_state(self):
-        """重置抓取状态"""
-        self._all_photos.clear()
-        self._photo_order.clear()
-        self._new_photos.clear()
-        self._api_count = 0
-        self._batch_count = 0
-
-    async def detect_tabs(self) -> list[dict]:
-        """检测页面选项卡"""
-        page = self._page
-        if not page:
-            return []
-
-        tabs = []
-        try:
-            await asyncio.sleep(1)
-
-            selectors = [
-                ".classifyBar-collapsed-items .classifyBar-item",
-                "button.classifyBar-item",
-                ".classifyBar-item",
-                "[class*='classifyBar'] button",
-                "[role='tab']",
-                "[class*='tab-bar'] [class*='item']",
-                "[class*='tab'] [class*='item']",
-            ]
-
-            for selector in selectors:
-                elements = await page.query_selector_all(selector)
-                if len(elements) >= 2:
-                    for i, el in enumerate(elements):
-                        is_visible = await el.is_visible()
-                        if not is_visible:
-                            continue
-                        name = (await el.inner_text()).strip()
-                        if not name or len(name) > 30:
-                            continue
-                        is_active = False
-                        active_attr = await el.get_attribute("active")
-                        if active_attr and active_attr.lower() in ("true", "", "active"):
-                            is_active = True
-                        if not is_active:
-                            class_attr = await el.get_attribute("class") or ""
-                            if "active" in class_attr.lower() or "current" in class_attr.lower():
-                                is_active = True
-                        tabs.append({"index": len(tabs), "name": name, "active": is_active})
-                    if len(tabs) >= 2:
-                        break
-
-            if tabs:
-                has_active = any(t["active"] for t in tabs)
-                if not has_active:
-                    tabs[0]["active"] = True
-                self._emit_log(f"检测到 {len(tabs)} 个选项卡: " +
-                               ", ".join(f"[{'当前' if t['active'] else ''}{t['name']}]" for t in tabs))
-            else:
-                self._emit_log("未检测到多个选项卡，将只下载当前页面内容")
-
-        except Exception as e:
-            self._emit_log(f"选项卡检测出错: {e}", "warning")
-
-        return tabs
-
-    async def switch_tab(self, tab_info: dict) -> bool:
-        """切换到指定选项卡"""
-        page = self._page
-        if not page:
-            return False
-
-        tab_name = tab_info["name"]
-        self._emit_log(f"正在切换到选项卡: [{tab_name}]...")
-        self.reset_state()
-
-        try:
-            await page.evaluate("window.scrollTo(0, 0)")
-            await asyncio.sleep(0.5)
-
-            clicked = await page.evaluate("""(tabName) => {
-                const buttons = document.querySelectorAll('.classifyBar-item, button[class*="classify"]');
-                for (const btn of buttons) {
-                    const text = (btn.textContent || '').trim();
-                    if (text === tabName) { btn.click(); return true; }
-                }
-                const allElements = document.querySelectorAll('div, span, a, li, button, [role="tab"]');
-                for (const el of allElements) {
-                    const text = (el.textContent || '').trim();
-                    if (text === tabName) { el.click(); return true; }
-                }
-                return false;
-            }""", tab_name)
-
-            if not clicked:
-                self._emit_log(f"无法点击选项卡 [{tab_name}]", "warning")
-                return False
-
-            self._emit_log(f"已点击选项卡 [{tab_name}]，等待内容加载...")
-
-            for i in range(20):
-                if self._api_count > 0 or self._stopped:
-                    break
-                await asyncio.sleep(1)
-
-            await asyncio.sleep(2)
-
-            if self._api_count == 0:
-                self._emit_log(f"尝试滚动触发 [{tab_name}] 的懒加载...")
-                await self._page.evaluate("window.scrollTo(0, 0)")
-                await asyncio.sleep(1)
-                for _ in range(5):
-                    await page.mouse.wheel(0, 300)
-                    await asyncio.sleep(0.2)
-                await asyncio.sleep(2)
-
-            if self._api_count > 0:
-                self._emit_log(f"选项卡 [{tab_name}] 加载成功，发现 {len(self._all_photos)} 张图片")
-                return True
-            else:
-                self._emit_log(f"选项卡 [{tab_name}] 未加载到图片数据", "warning")
-                return False
-
-        except Exception as e:
-            self._emit_log(f"切换选项卡出错: {e}", "error")
-            return False
-
-    async def close(self):
-        """关闭浏览器"""
-        try:
-            if self._page:
-                self._page.remove_listener("response", self._handle_response)
-                await self._page.close()
-            if self._context:
-                await self._context.close()
-            if self._browser:
-                await self._browser.close()
-            if self._playwright:
-                await self._playwright.stop()
-        except Exception as e:
-            logger.warning(f"关闭浏览器时出错: {e}")
-        finally:
-            self._page = self._context = self._browser = self._playwright = None
-
-    def get_new_photos(self) -> list[WotuPhotoInfo]:
-        """取出新增照片"""
-        batch = self._new_photos[:]
-        self._new_photos.clear()
-        if batch:
-            self._batch_count += 1
-            self._emit_log(f"第 {self._batch_count} 批: {len(batch)} 张新图片 (累计 {len(self._all_photos)} 张)")
-        return batch
-
-    async def scroll_and_wait(self, timeout: int = 10) -> bool:
-        """滚动触发懒加载"""
-        page = self._page
-        if not page or self._stopped:
-            return False
-
-        import random
-        delay = random.uniform(1, max(2, self.scroll_delay))
-        self._emit_log(f"随机等待 {delay:.1f} 秒后滚动...")
-        await asyncio.sleep(delay)
-
-        if self._stopped:
-            return False
-
-        try:
-            if page.is_closed():
-                self._emit_log("页面已关闭，停止滚动", "warning")
-                return False
-        except Exception:
-            return False
-
-        count_before = self._api_count
-
-        try:
-            scroll_rounds = 0
-            max_scroll_rounds = 20
-
-            while scroll_rounds < max_scroll_rounds and not self._stopped:
-                scroll_rounds += 1
-                for _ in range(5):
-                    await page.mouse.wheel(0, 300)
-                    await asyncio.sleep(0.15)
-
-                await asyncio.sleep(0.5)
-                if self._api_count > count_before:
-                    self._emit_log(f"滚动第 {scroll_rounds} 轮后触发新API请求")
-                    await asyncio.sleep(1.5)
-                    return True
-
-                at_bottom = await page.evaluate("""() => {
-                    const scrollContainer = document.querySelector('.album-scrollList') ||
-                        document.querySelector('.component-scroll');
-                    if (scrollContainer) {
-                        return (scrollContainer.clientHeight + scrollContainer.scrollTop) >= (scrollContainer.scrollHeight - 200);
-                    }
-                    return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 200);
-                }""")
-
-                if at_bottom:
-                    self._emit_log(f"已到达页面底部 (滚动 {scroll_rounds} 轮)")
-                    break
-
-            self._emit_log("等待可能的延迟加载...")
-            for _ in range(int(timeout / 2)):
-                if self._stopped:
-                    break
-                await asyncio.sleep(0.5)
-                if self._api_count > count_before:
-                    await asyncio.sleep(1.5)
-                    return True
-
-        except Exception as e:
-            self._emit_log(f"滚动出错: {e}", "warning")
-
-        return False
-
-    @property
-    def total_found(self) -> int:
-        return len(self._all_photos)
-
-    def _parse_single_photo(self, item: dict) -> Optional[WotuPhotoInfo]:
-        """解析单张图片"""
-        photo = WotuPhotoInfo()
-
-        url = ""
-        for key in ("ol", "bl", "url1920"):
-            val = item.get(key, "")
-            if val and isinstance(val, str) and val.startswith("http"):
-                url = val
-                break
-        if not url:
-            for val in item.values():
-                if isinstance(val, str) and val.startswith("http"):
-                    if any(ext in val.lower() for ext in ('.jpg', '.jpeg', '.png', '.webp')):
-                        url = val
-                        break
-        if not url:
-            return None
-
-        photo.url = url
-        photo.ext = extract_ext_from_url(url) or ".jpg"
-        photo.id = str(item.get("id", ""))
-
-        for key in ("ssl", "sl"):
-            val = item.get(key, "")
-            if val and isinstance(val, str) and val.startswith("http"):
-                photo.thumb_url = val
-                break
-        if not photo.thumb_url:
-            photo.thumb_url = url
-
-        raw_name = item.get("n", "")
-        if raw_name and isinstance(raw_name, str):
-            name_no_ext = re.sub(r'\.[^.]+$', '', raw_name)
-            photo.filename = sanitize_filename(f"{name_no_ext}{photo.ext}")
-        else:
-            photo.filename = sanitize_filename(f"{photo.id}{photo.ext}")
-
-        ts = item.get("time", 0) or item.get("shoot_time", 0)
-        if ts:
-            try:
-                ts_int = int(ts)
-                if ts_int > 1e12:
-                    ts_int = ts_int // 1000
-                photo.shoot_time = datetime.fromtimestamp(ts_int).strftime("%Y-%m-%d %H:%M:%S")
-            except (ValueError, OSError):
-                photo.shoot_time = str(ts)
-
-        os_val = item.get("os", "")
-        if os_val:
-            try:
-                photo.size = int(float(os_val))
-            except (ValueError, TypeError):
-                pass
-
-        w = item.get("w", 0) or item.get("width", 0)
-        h = item.get("h", 0) or item.get("height", 0)
-        if isinstance(w, (int, float)):
-            photo.width = int(w)
-        if isinstance(h, (int, float)):
-            photo.height = int(h)
-
-        return photo
-
-    def _find_photo_list_recursive(self, obj, depth=0) -> list:
-        """递归搜索含图片特征的列表"""
-        if depth > 5:
-            return []
-        markers = ("ol", "bl", "sl", "ssl", "url1920", "n", "shoot_time")
-        if isinstance(obj, list):
-            if obj and isinstance(obj[0], dict):
-                keys = set(obj[0].keys())
-                if any(m in keys for m in markers):
-                    return obj
-                if "id" in keys and isinstance(obj[0].get("id"), int):
-                    return obj
-            for item in obj[:10]:
-                r = self._find_photo_list_recursive(item, depth + 1)
-                if r:
-                    return r
-        elif isinstance(obj, dict):
-            for key in ("data", "photos", "list", "items", "result", "records",
-                        "photoList", "photo_list", "rows", "content"):
-                if key in obj:
-                    r = self._find_photo_list_recursive(obj[key], depth + 1)
-                    if r:
-                        return r
-            for val in obj.values():
-                r = self._find_photo_list_recursive(val, depth + 1)
-                if r:
-                    return r
-        return []
-
-    async def _handle_response(self, response):
-        """拦截喔图API响应"""
-        if self._stopped:
-            return
-
-        if response.status != 200 or not ALLTUU_API_RE.search(response.url):
-            return
-
-        self._api_count += 1
-        self._emit_log(f"[API #{self._api_count}] 拦截到响应")
-
-        try:
-            body = await response.json()
-        except Exception as e:
-            self._emit_log(f"JSON解析失败: {e}", "warning")
-            return
-
-        if not body or not isinstance(body, dict):
-            return
-
-        photo_list = self._find_photo_list_recursive(body)
-
-        if not photo_list:
-            self._emit_log("API响应中未找到图片列表", "warning")
-            return
-
-        added = 0
-        for item in photo_list:
-            if not isinstance(item, dict):
-                continue
-            photo = self._parse_single_photo(item)
-            if photo and photo.url and photo.id not in self._all_photos:
-                photo.index = len(self._all_photos) + 1
-                self._all_photos[photo.id] = photo
-                self._photo_order.append(photo.id)
-                self._new_photos.append(photo)
-                added += 1
-                self._emit_photo_found(photo)
-
-        if added > 0:
-            self._emit_log(f"本批新增 {added} 张 (累计 {len(self._all_photos)} 张)")
-            self._emit_progress({
-                "type": "scraping_progress",
-                "found": len(self._all_photos),
-                "batch": self._batch_count + 1,
-            })
