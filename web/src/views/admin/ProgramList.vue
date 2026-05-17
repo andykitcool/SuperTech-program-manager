@@ -7,6 +7,17 @@
       </a-button>
       <h2>{{ activity?.name || '节目管理' }}</h2>
       <a-space v-if="activeWorkspaceTab === 'programs'">
+        <div class="program-photo-category-picker">
+          <span class="ready-mode-label">照片分类</span>
+          <a-checkbox v-if="!programPhotoMatchCategories.length" checked disabled>全部</a-checkbox>
+          <a-checkbox-group
+            v-else
+            v-model:value="programPhotoMatchSelectedIds"
+            :options="programPhotoMatchCategoryOptions"
+            :disabled="savingProgramPhotoMatchCategories"
+            @change="handleProgramPhotoMatchCategoryChange"
+          />
+        </div>
         <div class="ready-mode-switch">
           <span class="ready-mode-label">就绪模式</span>
           <a-switch
@@ -292,6 +303,24 @@
             </a-space>
           </div>
 
+          <div v-if="activityPhotoCategories.length > 0" class="photo-category-filter">
+            <a-radio-group
+              v-model:value="activityPhotoCategoryId"
+              button-style="solid"
+              @change="handleActivityPhotoCategoryChange"
+            >
+              <a-radio-button value="">全部 {{ activityPhotoCategories.reduce((sum, item) => sum + item.count, 0) }}</a-radio-button>
+              <a-radio-button
+                v-for="category in activityPhotoCategories"
+                :key="category.category_id || category.category_name"
+                :value="category.category_id"
+                :disabled="!category.category_id"
+              >
+                {{ category.category_name || '未分类' }} {{ category.count }}
+              </a-radio-button>
+            </a-radio-group>
+          </div>
+
           <a-spin :spinning="activityPhotosLoading">
             <div v-if="activityPhotos.length > 0" class="activity-photo-grid">
               <div v-for="photo in activityPhotos" :key="photo.id" class="activity-photo-card" :class="{ 'activity-photo-card-selected': photoSelectedIds.has(photo.id) }">
@@ -315,6 +344,9 @@
                 </div>
                 <div class="activity-photo-meta">
                   <strong>{{ photo.filename || `照片 #${photo.id}` }}</strong>
+                  <a-tag v-if="photo.wotu_category_name" class="activity-photo-category">
+                    {{ photo.wotu_category_name }}
+                  </a-tag>
                   <span>{{ formatNullableTime(photo.shoot_time) }}</span>
                 </div>
               </div>
@@ -875,9 +907,11 @@ import {
   type Activity,
   type AudienceItem,
   type MusicOption,
+  type PhotoCategoryInfo,
   type PhotoItemFull,
   type PrintRecordItem,
   type Program,
+  type ProgramPhotoMatchCategory,
   type ProgramVideo,
   type ShortVideoAutoConfig,
 } from '@/api/admin'
@@ -963,6 +997,11 @@ const activityPhotosLoading = ref(false)
 const activityPhotoPage = ref(1)
 const activityPhotoPageSize = ref(30)
 const activityPhotoTotal = ref(0)
+const activityPhotoCategories = ref<PhotoCategoryInfo[]>([])
+const activityPhotoCategoryId = ref('')
+const programPhotoMatchCategories = ref<ProgramPhotoMatchCategory[]>([])
+const programPhotoMatchSelectedIds = ref<string[]>([])
+const savingProgramPhotoMatchCategories = ref(false)
 const printingPhotoId = ref<number | null>(null)
 const photoSelectedIds = ref<Set<number>>(new Set())
 const photoDeleting = ref(false)
@@ -1052,6 +1091,12 @@ const filteredPrograms = computed(() => {
 })
 
 const tableData = computed(() => [...newRows.value, ...filteredPrograms.value])
+const programPhotoMatchCategoryOptions = computed(() =>
+  programPhotoMatchCategories.value.map(category => ({
+    label: `${category.category_name || '未分类'} ${category.count}`,
+    value: category.category_id,
+  })),
+)
 
 function handleProgramPageChange(page: number) {
   programPage.value = page
@@ -1233,6 +1278,17 @@ const fetchActivity = async () => {
   activity.value = res.data
 }
 
+const fetchProgramPhotoMatchCategories = async () => {
+  try {
+    const res = await adminApi.getPhotoMatchCategories(activityId.value)
+    programPhotoMatchCategories.value = res.data.categories || []
+    programPhotoMatchSelectedIds.value = res.data.selected_category_ids || []
+  } catch {
+    programPhotoMatchCategories.value = []
+    programPhotoMatchSelectedIds.value = []
+  }
+}
+
 const fetchData = async () => {
   loading.value = true
   try {
@@ -1243,6 +1299,7 @@ const fetchData = async () => {
     const [actRes, progRes] = await Promise.all([
       adminApi.getActivity(activityId.value),
       adminApi.listPrograms(activityId.value),
+      fetchProgramPhotoMatchCategories(),
     ])
     activity.value = actRes.data
     programs.value = progRes.data
@@ -1268,6 +1325,24 @@ const refreshProgramsSilently = async () => {
     })
   } catch {
     // keep live refresh quiet; manual refresh still reports errors
+  }
+}
+
+const handleProgramPhotoMatchCategoryChange = async (values: any[]) => {
+  savingProgramPhotoMatchCategories.value = true
+  try {
+    const categoryIds = values.map(value => String(value))
+    const res = await adminApi.updatePhotoMatchCategories(activityId.value, categoryIds)
+    programPhotoMatchCategories.value = res.data.categories || []
+    programPhotoMatchSelectedIds.value = res.data.selected_category_ids || []
+    const progRes = await adminApi.listPrograms(activityId.value)
+    programs.value = progRes.data
+    message.success('照片关联分类已更新')
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || '更新照片关联分类失败')
+    await fetchProgramPhotoMatchCategories()
+  } finally {
+    savingProgramPhotoMatchCategories.value = false
   }
 }
 
@@ -1322,14 +1397,26 @@ const stopPrintRecordPolling = () => {
 const fetchActivityPhotos = async () => {
   activityPhotosLoading.value = true
   try {
-    const res = await photoApi.getActivityPhotos(activityId.value, activityPhotoPage.value, activityPhotoPageSize.value)
+    const res = await photoApi.getActivityPhotos(
+      activityId.value,
+      activityPhotoPage.value,
+      activityPhotoPageSize.value,
+      activityPhotoCategoryId.value || undefined,
+    )
     activityPhotos.value = res.data.photos
+    activityPhotoCategories.value = res.data.categories || []
     activityPhotoTotal.value = res.data.total
   } catch {
     message.error('加载照片失败')
   } finally {
     activityPhotosLoading.value = false
   }
+}
+
+const handleActivityPhotoCategoryChange = () => {
+  activityPhotoPage.value = 1
+  photoSelectedIds.value = new Set()
+  fetchActivityPhotos()
 }
 
 function togglePhotoSelect(photoId: number, checked: boolean) {
@@ -2178,6 +2265,27 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.program-photo-category-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 520px;
+  padding-right: 4px;
+  overflow-x: auto;
+}
+
+.program-photo-category-picker :deep(.ant-checkbox-group) {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.program-photo-category-picker :deep(.ant-checkbox-wrapper) {
+  margin-inline-start: 0;
+  white-space: nowrap;
+}
+
 .ready-mode-label {
   font-size: 14px;
   color: #595959;
@@ -2975,6 +3083,15 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
+.photo-category-filter {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #fafbfc;
+  overflow-x: auto;
+}
+
 .activity-photo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
@@ -3046,6 +3163,11 @@ onUnmounted(() => {
   margin-top: 3px;
   color: #6b7280;
   font-size: 12px;
+}
+
+.activity-photo-category {
+  margin: 6px 0 0;
+  max-width: 100%;
 }
 
 .photo-pagination {

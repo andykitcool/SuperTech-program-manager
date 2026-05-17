@@ -14,6 +14,7 @@ export interface Activity {
   storage_path_prefix: string | null
   cover_image: string | null
   ready_mode: string
+  sync_mode: 'local' | 'api'
   program_count: number
   ready_program_count: number
   created_at: string
@@ -166,6 +167,18 @@ export interface PhotoItem {
   height: number | null
 }
 
+export interface ProgramPhotoMatchCategory {
+  category_id: string
+  category_name: string
+  count: number
+}
+
+export interface ProgramPhotoMatchCategoryResponse {
+  categories: ProgramPhotoMatchCategory[]
+  selected_category_ids: string[]
+  has_categories: boolean
+}
+
 // Admin APIs
 export const adminApi = {
   login: (username: string, password: string) =>
@@ -188,6 +201,14 @@ export const adminApi = {
 
   updateActivity: (id: number, data: Partial<Activity>) =>
     request.put<Activity>(`/admin/activities/${id}`, data),
+
+  getPhotoMatchCategories: (activityId: number) =>
+    request.get<ProgramPhotoMatchCategoryResponse>(`/admin/activities/${activityId}/photo-match-categories`),
+
+  updatePhotoMatchCategories: (activityId: number, categoryIds: string[]) =>
+    request.put<ProgramPhotoMatchCategoryResponse>(`/admin/activities/${activityId}/photo-match-categories`, {
+      category_ids: categoryIds,
+    }),
 
   deleteActivity: (id: number) =>
     request.delete(`/admin/activities/${id}`),
@@ -338,8 +359,10 @@ export interface SyncHistoryItem {
   config: {
     concurrency?: number
     scroll_delay?: number
+    no_new_stop_rounds?: number
     tab_mode?: string
     tab_subdir?: boolean
+    selected_categories?: WotuCategoryInfo[]
     storage_path_prefix?: string
   }
   total_found: number
@@ -361,19 +384,69 @@ export interface SyncHistoryResponse {
   page_size: number
 }
 
+export interface WotuCategoryInfo {
+  index?: number
+  name: string
+  category_id: string
+  sort?: string
+  count?: number
+}
+
+export interface WotuAlbumInfo {
+  album_id: string
+  total: number
+  categories: WotuCategoryInfo[]
+}
+
+export interface WotuApiSyncConfig {
+  service_url: string
+  api_key: string
+  callback_base_url: string
+  has_api_key: boolean
+  configured: boolean
+  callback_urls: {
+    photo_uploaded: string
+    task_complete: string
+    task_progress: string
+  }
+}
+
 export const wotuApi = {
+  getApiConfig: () =>
+    request.get<WotuApiSyncConfig>('/admin/sync/api-config'),
+
+  updateApiConfig: (data: {
+    service_url?: string
+    api_key?: string
+    callback_base_url?: string
+  }) => request.put<WotuApiSyncConfig>('/admin/sync/api-config', data),
+
+  setSyncMode: (activityId: number, syncMode: 'local' | 'api') =>
+    request.put<{ sync_mode: string }>('/admin/sync/mode', {
+      activity_id: activityId,
+      sync_mode: syncMode,
+    }),
+
   startSync: (data: {
     activity_id: number
     url: string
     concurrency?: number
     scroll_delay?: number
+    no_new_stop_rounds?: number
     tab_mode?: string
     tab_subdir?: boolean
+    selected_categories?: WotuCategoryInfo[]
+    sync_mode?: 'local' | 'api'
   }) => request.post('/admin/sync/start', data),
 
-  stopSync: () => request.post('/admin/sync/stop'),
+  getAlbumInfo: (url: string) =>
+    request.post<WotuAlbumInfo>('/admin/sync/album-info', { url }),
 
-  getStatus: () => request.get('/admin/sync/status'),
+  stopSync: (params?: { activity_id?: number }) =>
+    request.post('/admin/sync/stop', null, { params }),
+
+  getStatus: (params?: { activity_id?: number; task_id?: number }) =>
+    request.get('/admin/sync/status', { params }),
 
   getPhotos: () => request.get('/admin/sync/photos'),
 
@@ -406,13 +479,22 @@ export interface PhotoItemFull {
   width: number | null
   height: number | null
   file_size: number | null
+  wotu_category_id: string | null
+  wotu_category_name: string | null
   sync_status: string | null
   created_at: string | null
+}
+
+export interface PhotoCategoryInfo {
+  category_id: string
+  category_name: string
+  count: number
 }
 
 export interface PhotoListResponse {
   activity: { id: number; name: string; event_date: string | null }
   photos: PhotoItemFull[]
+  categories: PhotoCategoryInfo[]
   total: number
   page: number
   page_size: number
@@ -422,9 +504,9 @@ export const photoApi = {
   getPhotoActivities: () =>
     request.get<PhotoActivity[]>('/admin/photos/activities'),
 
-  getActivityPhotos: (activityId: number, page = 1, pageSize = 30) =>
+  getActivityPhotos: (activityId: number, page = 1, pageSize = 30, categoryId?: string) =>
     request.get<PhotoListResponse>(`/admin/photos/activity/${activityId}`, {
-      params: { page, page_size: pageSize },
+      params: { page, page_size: pageSize, category_id: categoryId || undefined },
     }),
 
   deletePhoto: (photoId: number) =>
@@ -694,9 +776,7 @@ export const materialApi = {
     wechat_pay_mchid?: string
     wechat_pay_api_key?: string
     wechat_pay_notify_url?: string
-    print_render_mode?: 'frontend' | 'server'
-    print_render_multiplier?: 1 | 2 | 3
-    print_dispatch_mode?: 'lankuo' | 'local_client'
+    print_dispatch_mode?: 'lankuo' | 'local_client' | 'disabled'
     lankuo_print_config?: Record<string, any>
   }) => request.put('/admin/materials/settings', data),
 
@@ -711,9 +791,7 @@ export const activityPrintSettingsApi = {
   update: (activityId: number, data: {
     print_free_quota?: number
     print_price?: number
-    print_render_mode?: 'frontend' | 'server'
-    print_render_multiplier?: 1 | 2 | 3
-    print_dispatch_mode?: 'lankuo' | 'local_client'
+    print_dispatch_mode?: 'lankuo' | 'local_client' | 'disabled'
   }) => request.put(`/admin/activities/${activityId}/print-settings`, data),
 }
 

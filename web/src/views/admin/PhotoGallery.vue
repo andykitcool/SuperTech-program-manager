@@ -17,8 +17,22 @@
       </div>
       <h2>{{ activity.name }} - 照片浏览</h2>
       <a-space>
-        <span style="color: #8c8c8c; font-size: 13px">共 {{ total }} 张照片</span>
+        <span class="photo-total">共 {{ total }} 张照片</span>
       </a-space>
+    </div>
+
+    <div v-if="categories.length > 0" class="category-filter">
+      <a-radio-group v-model:value="categoryId" button-style="solid" @change="handleCategoryChange">
+        <a-radio-button value="">全部 {{ categoryTotal }}</a-radio-button>
+        <a-radio-button
+          v-for="category in categories"
+          :key="category.category_id || category.category_name"
+          :value="category.category_id"
+          :disabled="!category.category_id"
+        >
+          {{ category.category_name || '未分类' }} {{ category.count }}
+        </a-radio-button>
+      </a-radio-group>
     </div>
 
     <a-spin :spinning="loading">
@@ -38,10 +52,14 @@
             />
           </div>
           <div class="photo-thumb">
-            <img :src="getThumbUrl(photo.storage_url || photo.wotu_url) || fallbackImage" @error="($event.target as HTMLImageElement).src = fallbackImage" />
+            <img
+              :src="getThumbUrl(photo.storage_url || photo.wotu_url) || fallbackImage"
+              @error="($event.target as HTMLImageElement).src = fallbackImage"
+            />
           </div>
           <div class="photo-info">
             <span class="photo-name" :title="photo.filename">{{ photo.filename }}</span>
+            <a-tag v-if="photo.wotu_category_name" class="photo-category">{{ photo.wotu_category_name }}</a-tag>
             <span class="photo-time" v-if="photo.shoot_time">{{ formatShootTime(photo.shoot_time) }}</span>
           </div>
         </div>
@@ -72,6 +90,7 @@
       />
       <div class="preview-info" v-if="previewPhoto">
         <p><strong>文件名：</strong>{{ previewPhoto.filename }}</p>
+        <p v-if="previewPhoto.wotu_category_name"><strong>分类：</strong>{{ previewPhoto.wotu_category_name }}</p>
         <p v-if="previewPhoto.shoot_time"><strong>拍摄时间：</strong>{{ formatShootTime(previewPhoto.shoot_time) }}</p>
         <p v-if="previewPhoto.width && previewPhoto.height"><strong>尺寸：</strong>{{ previewPhoto.width }} x {{ previewPhoto.height }}</p>
         <p v-if="previewPhoto.file_size"><strong>大小：</strong>{{ formatSize(previewPhoto.file_size) }}</p>
@@ -81,17 +100,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeftOutlined, DeleteOutlined, DeleteFilled } from '@ant-design/icons-vue'
+import { ArrowLeftOutlined, DeleteFilled, DeleteOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
-import { photoApi, type PhotoItemFull } from '@/api/admin'
-import { getThumbUrl, getPreviewUrl } from '@/utils/image'
+import { photoApi, type PhotoCategoryInfo, type PhotoItemFull } from '@/api/admin'
+import { getPreviewUrl, getThumbUrl } from '@/utils/image'
 
 const route = useRoute()
 const activityId = computed(() => Number(route.params.id))
 const activity = ref({ id: 0, name: '', event_date: '' as string | null })
 const photos = ref<PhotoItemFull[]>([])
+const categories = ref<PhotoCategoryInfo[]>([])
+const categoryId = ref('')
 const loading = ref(false)
 const total = ref(0)
 const currentPage = ref(1)
@@ -99,11 +120,11 @@ const pageSize = ref(30)
 const previewVisible = ref(false)
 const previewPhoto = ref<PhotoItemFull | null>(null)
 
-// Selection state
 const selectedIds = ref<Set<number>>(new Set())
 const deleting = ref(false)
 const deletingAll = ref(false)
 
+const categoryTotal = computed(() => categories.value.reduce((sum, item) => sum + item.count, 0))
 const fallbackImage = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150"><rect fill="%23f0f0f0" width="200" height="150"/><text x="100" y="80" text-anchor="middle" fill="%23bfbfbf" font-size="14">加载失败</text></svg>'
 
 function formatShootTime(time: string) {
@@ -118,27 +139,22 @@ function formatSize(bytes: number) {
 }
 
 function toggleSelect(photoId: number, checked: boolean) {
-  const newSet = new Set(selectedIds.value)
+  const next = new Set(selectedIds.value)
   if (checked) {
-    newSet.add(photoId)
+    next.add(photoId)
   } else {
-    newSet.delete(photoId)
+    next.delete(photoId)
   }
-  selectedIds.value = newSet
+  selectedIds.value = next
 }
 
 function handlePhotoClick(photo: PhotoItemFull, event: MouseEvent) {
   if (event.ctrlKey || event.metaKey) {
-    // Ctrl+click to toggle selection
     toggleSelect(photo.id, !selectedIds.value.has(photo.id))
   } else {
-    handlePreview(photo)
+    previewPhoto.value = photo
+    previewVisible.value = true
   }
-}
-
-function handlePreview(photo: PhotoItemFull) {
-  previewPhoto.value = photo
-  previewVisible.value = true
 }
 
 async function handleDeleteSelected() {
@@ -170,7 +186,7 @@ async function handleDeleteSelected() {
 function handleDeleteAll() {
   Modal.confirm({
     title: '确认全部删除',
-    content: `确定要删除该活动下的所有 ${total.value} 张照片吗？此操作不可恢复。`,
+    content: `确定要删除该活动下的全部 ${total.value} 张照片吗？此操作不可恢复。`,
     okText: '全部删除',
     okType: 'danger',
     cancelText: '取消',
@@ -180,6 +196,7 @@ function handleDeleteAll() {
         const res = await photoApi.deleteAllActivityPhotos(activityId.value)
         message.success(`已删除 ${res.data.count} 张照片`)
         selectedIds.value = new Set()
+        categoryId.value = ''
         await fetchPhotos()
       } catch {
         message.error('删除照片失败')
@@ -193,15 +210,27 @@ function handleDeleteAll() {
 async function fetchPhotos() {
   loading.value = true
   try {
-    const res = await photoApi.getActivityPhotos(activityId.value, currentPage.value, pageSize.value)
+    const res = await photoApi.getActivityPhotos(
+      activityId.value,
+      currentPage.value,
+      pageSize.value,
+      categoryId.value || undefined,
+    )
     activity.value = res.data.activity
     photos.value = res.data.photos
+    categories.value = res.data.categories || []
     total.value = res.data.total
   } catch {
     message.error('加载照片失败')
   } finally {
     loading.value = false
   }
+}
+
+function handleCategoryChange() {
+  currentPage.value = 1
+  selectedIds.value = new Set()
+  fetchPhotos()
 }
 
 function onPageChange(page: number) {
@@ -218,7 +247,8 @@ onMounted(fetchPhotos)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
+  gap: 12px;
 }
 
 .page-header h2 {
@@ -230,6 +260,20 @@ onMounted(fetchPhotos)
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.photo-total {
+  color: #8c8c8c;
+  font-size: 13px;
+}
+
+.category-filter {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #fafbfc;
+  overflow-x: auto;
 }
 
 .photo-grid {
@@ -292,11 +336,16 @@ onMounted(fetchPhotos)
   text-overflow: ellipsis;
 }
 
+.photo-category {
+  margin: 5px 0 0;
+  max-width: 100%;
+}
+
 .photo-time {
   display: block;
   font-size: 11px;
   color: #999;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .pagination-wrapper {

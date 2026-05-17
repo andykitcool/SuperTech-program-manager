@@ -3,10 +3,10 @@
     <div class="panel-toolbar">
       <div>
         <h3>打印设置</h3>
-        <p>配置当前打印流程的额度、价格与图片合成位置。纸张尺寸由「打印模版」中选中的模版决定。</p>
+        <p>配置当前活动的打印额度、价格和派发方式。打印图片由前端或本地打印客户端合成。</p>
       </div>
       <a-space>
-        <a-button @click="loadData" :loading="loading">重置</a-button>
+        <a-button @click="loadData" :loading="loading">重载</a-button>
         <a-button type="primary" @click="saveData" :loading="saving">
           <template #icon><SaveOutlined /></template>
           保存
@@ -21,14 +21,14 @@
           <div class="setting-row">
             <div>
               <strong>免费打印额度</strong>
-              <span>每个微信用户在每个活动下可享受的免费打印张数。</span>
+              <span>每个微信用户在当前活动下可免费打印的张数。</span>
             </div>
             <a-input-number v-model:value="form.print_free_quota" :min="0" :max="100" style="width: 130px" />
           </div>
           <div class="setting-row">
             <div>
               <strong>超额打印价格</strong>
-              <span>用户超出免费额度后，每张照片的打印价格。</span>
+              <span>用户超过免费额度后，每张照片的打印价格。</span>
             </div>
             <a-input-number
               v-model:value="form.print_price"
@@ -43,37 +43,24 @@
         </section>
 
         <section class="settings-card">
-          <div class="card-title">图片合成位置</div>
+          <div class="card-title">打印派发</div>
           <div class="setting-row">
             <div>
-              <strong>服务端合成打印图片</strong>
-              <span>开启后，服务端用 Fabric/Playwright 合成图片并继续走云打印派发。</span>
+              <strong>派发方式</strong>
+              <span>选择订单提交到蓝阔云打印，或由本地 Windows 打印客户端领取处理。</span>
             </div>
-            <a-switch
-              v-model:checked="form.server_render_enabled"
-              checked-children="服务端"
-              un-checked-children="本地"
-            />
+            <a-select v-model:value="form.print_dispatch_mode" style="width: 180px">
+              <a-select-option value="lankuo">蓝阔云打印</a-select-option>
+              <a-select-option value="local_client">本地打印客户端</a-select-option>
+              <a-select-option value="disabled">暂停派发</a-select-option>
+            </a-select>
           </div>
           <div class="setting-row">
             <div>
-              <strong>本地电脑合成打印图片</strong>
-              <span>关闭上方开关后，订单保持排队状态，由 supertech-PhotoPrinter 本地领取、合成并打印。</span>
+              <strong>图片合成</strong>
+              <span>服务端不再使用浏览器内核合成打印图片，避免大体积运行依赖。</span>
             </div>
-            <a-tag :color="form.server_render_enabled ? 'default' : 'green'">
-              {{ form.server_render_enabled ? '未启用' : 'print_dispatch_mode=local_client' }}
-            </a-tag>
-          </div>
-          <div class="setting-row">
-            <div>
-              <strong>服务端合成图倍率</strong>
-              <span>仅服务端合成模式使用；本地电脑合成固定使用最终打印像素与 PNG 母版。</span>
-            </div>
-            <a-segmented
-              v-model:value="form.print_render_multiplier"
-              :options="renderMultiplierOptions"
-              :disabled="!form.server_render_enabled"
-            />
+            <a-tag color="green">前端/本地客户端合成</a-tag>
           </div>
         </section>
       </div>
@@ -97,15 +84,8 @@ const saving = ref(false)
 const form = reactive({
   print_free_quota: 2,
   print_price: 1,
-  server_render_enabled: true,
-  print_render_multiplier: 1 as 1 | 2 | 3,
+  print_dispatch_mode: 'lankuo' as 'lankuo' | 'local_client' | 'disabled',
 })
-
-const renderMultiplierOptions = [
-  { label: '1倍', value: 1 },
-  { label: '2倍', value: 2 },
-  { label: '3倍', value: 3 },
-]
 
 async function loadData() {
   loading.value = true
@@ -113,10 +93,7 @@ async function loadData() {
     const settings = (await activityPrintSettingsApi.get(props.activityId) as any)?.data || {}
     form.print_free_quota = settings.print_free_quota ?? 2
     form.print_price = (settings.print_price ?? 100) / 100
-    form.server_render_enabled = (settings.print_dispatch_mode || 'lankuo') !== 'local_client'
-    form.print_render_multiplier = ([1, 2, 3].includes(settings.print_render_multiplier)
-      ? settings.print_render_multiplier
-      : 1) as 1 | 2 | 3
+    form.print_dispatch_mode = settings.print_dispatch_mode || 'lankuo'
   } catch (error: any) {
     message.error(error?.response?.data?.detail || '加载打印设置失败')
   } finally {
@@ -130,9 +107,7 @@ async function saveData() {
     await activityPrintSettingsApi.update(props.activityId, {
       print_free_quota: form.print_free_quota,
       print_price: Math.round(form.print_price * 100),
-      print_dispatch_mode: form.server_render_enabled ? 'lankuo' : 'local_client',
-      print_render_mode: form.server_render_enabled ? 'server' : 'frontend',
-      print_render_multiplier: form.print_render_multiplier,
+      print_dispatch_mode: form.print_dispatch_mode,
     })
     message.success('打印设置已保存')
   } catch (error: any) {
