@@ -157,8 +157,8 @@ def get_print_settings(
         wechat_pay_mchid=_get_setting(db, WECHAT_PAY_MCHID_KEY, ""),
         wechat_pay_api_key="",  # 不返回密钥，只用于配置
         wechat_pay_notify_url=_get_setting(db, WECHAT_PAY_NOTIFY_URL_KEY, ""),
-        print_render_mode=_get_setting(db, PRINT_RENDER_MODE_KEY, PRINT_RENDER_MODE_FRONTEND),
-        print_render_multiplier=_get_print_render_multiplier(db),
+        print_render_mode=PRINT_RENDER_MODE_FRONTEND,
+        print_render_multiplier=DEFAULT_PRINT_RENDER_MULTIPLIER,
         print_dispatch_mode=_get_setting(db, PRINT_DISPATCH_MODE_KEY, PRINT_DISPATCH_MODE_LANKUO),
         lankuo_print_config=_get_lankuo_print_config(db),
     )

@@ -17,6 +17,8 @@ class PhotoOut(BaseModel):
     width: Optional[int]
     height: Optional[int]
     file_size: Optional[int]
+    wotu_category_id: Optional[str] = None
+    wotu_category_name: Optional[str] = None
     sync_status: SyncStatus
     created_at: datetime
 
@@ -29,5 +31,7 @@ class PhotoListOut(BaseModel):
     shoot_time: Optional[datetime]
     width: Optional[int]
     height: Optional[int]
+    wotu_category_id: Optional[str] = None
+    wotu_category_name: Optional[str] = None
 
     model_config = {"from_attributes": True}

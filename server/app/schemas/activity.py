@@ -49,6 +49,7 @@ class ActivityOut(BaseModel):
     storage_path_prefix: Optional[str]
     cover_image: Optional[str]
     ready_mode: ReadyMode = ReadyMode.AUTO
+    sync_mode: str = "local"
     program_count: int = 0
     ready_program_count: int = 0
     created_at: datetime

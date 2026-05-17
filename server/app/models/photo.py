@@ -28,6 +28,8 @@ class Photo(Base):
     height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     file_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     wotu_photo_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, unique=True)
+    wotu_category_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, index=True)
+    wotu_category_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, index=True)
     sync_status: Mapped[SyncStatus] = mapped_column(
         SAEnum(SyncStatus), default=SyncStatus.PENDING
     )

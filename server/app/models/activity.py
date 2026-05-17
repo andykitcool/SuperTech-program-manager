@@ -72,6 +72,7 @@ class Activity(Base):
     ready_mode: Mapped[ReadyMode] = mapped_column(
         SAEnum(ReadyMode), default=ReadyMode.AUTO
     )
+    sync_mode: Mapped[str] = mapped_column(String(10), default="local")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

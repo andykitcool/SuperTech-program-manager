@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from sqlalchemy import String, or_
+from sqlalchemy import String, func, or_
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel, Field
@@ -24,6 +24,47 @@ from app.api.material import PrintSettingsUpdate
 from app.utils.activity_print_settings import get_activity_print_settings, update_activity_print_settings
 
 router = APIRouter()
+
+
+class PhotoMatchCategoriesUpdate(BaseModel):
+    category_ids: List[str] = Field(default_factory=list)
+
+
+def _photo_match_categories_key(activity_id: int) -> str:
+    return f"activity_{activity_id}_photo_match_categories"
+
+
+def _get_photo_match_category_ids(db: Session, activity_id: int) -> Optional[list[str]]:
+    import json
+
+    setting = db.query(SystemSettings).filter(SystemSettings.key == _photo_match_categories_key(activity_id)).first()
+    if not setting or setting.value in (None, ""):
+        return None
+    try:
+        parsed = json.loads(setting.value)
+    except Exception:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [str(item) for item in parsed if str(item) != ""]
+
+
+def _set_photo_match_category_ids(db: Session, activity_id: int, category_ids: list[str]) -> None:
+    import json
+
+    cleaned = list(dict.fromkeys(str(item) for item in category_ids if str(item) != ""))
+    key = _photo_match_categories_key(activity_id)
+    setting = db.query(SystemSettings).filter(SystemSettings.key == key).first()
+    if not setting:
+        setting = SystemSettings(
+            key=key,
+            value=json.dumps(cleaned, ensure_ascii=False),
+            description="活动节目照片时间关联分类范围",
+        )
+        db.add(setting)
+    else:
+        setting.value = json.dumps(cleaned, ensure_ascii=False)
+        setting.description = setting.description or "活动节目照片时间关联分类范围"
 
 
 def _match_photos_to_program(db: Session, program: Program):
@@ -62,7 +103,14 @@ def _match_photos_to_program(db: Session, program: Program):
         Photo.shoot_time >= start,
         Photo.shoot_time <= end,
         Photo.program_id.is_(None),
-    ).all()
+    )
+    selected_category_ids = _get_photo_match_category_ids(db, program.activity_id)
+    if selected_category_ids is not None:
+        if selected_category_ids:
+            matched_photos = matched_photos.filter(Photo.wotu_category_id.in_(selected_category_ids))
+        else:
+            matched_photos = matched_photos.filter(False)
+    matched_photos = matched_photos.all()
 
     for photo in matched_photos:
         photo.program_id = program.id
@@ -134,6 +182,58 @@ def get_activity(
     out.program_count = len(activity.programs)
     out.ready_program_count = sum(1 for p in activity.programs if p.ready_status.value == "ready")
     return out
+
+
+@router.get("/activities/{activity_id}/photo-match-categories")
+def get_photo_match_categories(
+    activity_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    require_activity_access(db, current_user, activity_id)
+    rows = (
+        db.query(
+            Photo.wotu_category_id.label("category_id"),
+            Photo.wotu_category_name.label("category_name"),
+            func.count(Photo.id).label("count"),
+        )
+        .filter(Photo.activity_id == activity_id)
+        .group_by(Photo.wotu_category_id, Photo.wotu_category_name)
+        .order_by(Photo.wotu_category_name.asc())
+        .all()
+    )
+    categories = [
+        {
+            "category_id": r.category_id or "",
+            "category_name": r.category_name or "未分类",
+            "count": r.count,
+        }
+        for r in rows
+        if r.category_id
+    ]
+    stored = _get_photo_match_category_ids(db, activity_id)
+    selected = stored if stored is not None else [item["category_id"] for item in categories]
+    return {
+        "categories": categories,
+        "selected_category_ids": selected,
+        "has_categories": bool(categories),
+    }
+
+
+@router.put("/activities/{activity_id}/photo-match-categories")
+def update_photo_match_categories(
+    activity_id: int,
+    data: PhotoMatchCategoriesUpdate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    require_activity_access(db, current_user, activity_id, "activity.manage")
+    _set_photo_match_category_ids(db, activity_id, data.category_ids)
+    programs = db.query(Program).filter(Program.activity_id == activity_id).order_by(Program.start_time.asc(), Program.id.asc()).all()
+    for program in programs:
+        _match_photos_to_program(db, program)
+    db.commit()
+    return get_photo_match_categories(activity_id, db, current_user)
 
 
 @router.post("/activities", response_model=ActivityOut)
