@@ -13,3 +13,6 @@ env
 *.log
 .DS_Store
 Thumbs.db
+
+# 用户上传文件（已通过 volume 挂载，复制进镜像浪费空间且拖慢构建）
+uploads/

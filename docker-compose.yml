@@ -38,7 +38,10 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-admin123}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,https://print.lurevan.com}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-}
+      WOTU_SERVICE_URL: ${WOTU_SERVICE_URL:-}
+      WOTU_API_KEY: ${WOTU_API_KEY:-}
       DEFAULT_STORAGE_PROVIDER: aliyun
       TZ: Asia/Shanghai
       WEB_CONTAINER_NAME: ${WEB_CONTAINER_NAME:-supertech-program-manager_new-web-1}

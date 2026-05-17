@@ -11,6 +11,9 @@
 		},
 		{
 			"path": "../supertech-PhotoPrinter"
+		},
+		{
+			"path": "../wotu-getphoto-by-deepseek"
 		}
 	],
 	"settings": {}

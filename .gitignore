@@ -32,6 +32,12 @@ pnpm-debug.log*
 server/uploads/*
 !server/uploads/.gitkeep
 
+# Deployment bundles and database backups
+*.sql
+*.tar
+*.bundle
+backup_*.txt
+
 # Editors / OS
 .vscode/*
 !.vscode/extensions.json
